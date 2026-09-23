@@ -141,3 +141,84 @@ test('delivery RPC uses its own channel and accepts Harness-admitted LAN request
     host: '192.168.1.100:3080', origin: 'http://192.168.1.100:3080',
   }), { ok: true, value: { method: 'listTargets' } });
 });
+
+test('delivery RPC message.list and message.send reply options forward to service', async () => {
+  const { service, calls } = serviceFixture();
+  service.listMessages = async (...args) => {
+    calls.push(['listMessages', ...args]);
+    return { items: [{ messageId: 'om_1' }], hasMore: false };
+  };
+  const handle = createDeliveryRpcHandler(service);
+  const signal = new AbortController().signal;
+
+  // message.list valid call
+  const listRes = await handle('message.list', {
+    botId: 'bot_one',
+    targetId: 'target_one',
+    options: { pageSize: 25, pageToken: 'tok_1' },
+  }, signal);
+  assert.equal(listRes.ok, true);
+  assert.deepEqual(listRes.value, { items: [{ messageId: 'om_1' }], hasMore: false });
+  assert.deepEqual(calls[0], [
+    'listMessages',
+    'bot_one',
+    'target_one',
+    { signal, pageSize: 25, pageToken: 'tok_1' },
+  ]);
+
+  // message.send with reply options
+  const sendRes = await handle('message.send', {
+    botId: 'bot_one',
+    targetId: 'target_one',
+    text: 'reply hello',
+    replyToMessageId: 'om_root',
+    replyInThread: true,
+  }, signal);
+  assert.equal(sendRes.ok, true);
+  assert.deepEqual(calls[1], [
+    'send',
+    'bot_one',
+    'target_one',
+    'reply hello',
+    { signal, replyToMessageId: 'om_root', replyInThread: true },
+  ]);
+
+  // message.list validation rejections
+  for (const invalidPayload of [
+    { botId: 'bot_one' },
+    { targetId: 'target_one' },
+    { botId: 'bot_one', targetId: 'target_one', options: 'not-an-object' },
+    { botId: 'bot_one', targetId: 'target_one', options: { pageSize: 0 } },
+    { botId: 'bot_one', targetId: 'target_one', options: { pageSize: 100 } },
+    { botId: 'bot_one', targetId: 'target_one', options: { threadId: 'omt_1', startTime: 12345 } },
+    { botId: 'bot_one', targetId: 'target_one', extra: 'bad' },
+  ]) {
+    const res = await handle('message.list', invalidPayload);
+    assert.equal(res.ok, false);
+    assert.equal(res.error.code, 'bad-request');
+  }
+
+  // message.send reply validation rejections
+  for (const invalidSend of [
+    { botId: 'bot_one', targetId: 'target_one', text: 'hi', replyInThread: true },
+    { botId: 'bot_one', targetId: 'target_one', text: 'hi', replyToMessageId: '' },
+    { botId: 'bot_one', targetId: 'target_one', text: 'hi', replyInThread: 'yes' },
+  ]) {
+    const res = await handle('message.send', invalidSend);
+    assert.equal(res.ok, false);
+    assert.equal(res.error.code, 'bad-request');
+  }
+});
+
+test('delivery RPC preserves permission-denied error code', async () => {
+  const { service } = serviceFixture();
+  service.listMessages = async () => {
+    const err = new Error('Feishu permission required');
+    err.code = 'permission-denied';
+    throw err;
+  };
+  const handle = createDeliveryRpcHandler(service);
+  const res = await handle('message.list', { botId: 'bot_one', targetId: 'target_one' });
+  assert.equal(res.ok, false);
+  assert.equal(res.error.code, 'permission-denied');
+});

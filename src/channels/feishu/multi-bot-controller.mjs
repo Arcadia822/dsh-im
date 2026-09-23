@@ -570,6 +570,32 @@ export class MultiBotDshFeishuController {
       return runtime.sendProactiveText(target, text, options);
     });
   }
+  async listMessages(botId, target, options = {}) {
+    this.#assertOpen();
+    return this.#withBotTransition(botId, async () => {
+      this.#requireBot(botId);
+      const runtime = this.#runtimes.get(botId);
+      if (!isConnected(connectionStatus(runtime))
+        || typeof runtime.listMessages !== 'function') {
+        const error = new Error('飞书机器人尚未连接');
+        error.code = 'bot-not-connected';
+        throw error;
+      }
+      return runtime.listMessages(target, options);
+    });
+  }
+  conversationContextForSession(sessionId) {
+    this.#assertOpen();
+    for (const runtime of this.#runtimes.values()) {
+      if (typeof runtime?.conversationContextForSession === 'function') {
+        const ctx = runtime.conversationContextForSession(sessionId);
+        if (ctx) return ctx;
+      }
+    }
+    return null;
+  }
+
+
 
   async disconnectBot(botId) {
     this.#assertOpen();

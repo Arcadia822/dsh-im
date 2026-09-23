@@ -432,6 +432,7 @@ test('callback repair is deduplicated per bot, updates only its secret, and prov
     scopes: {
       tenant: [
         'im:message:readonly',
+        'im:message.group_msg',
         'im:resource',
         'im:message.group_at_msg.include_bot:readonly',
         'application:app_slash_command:read',

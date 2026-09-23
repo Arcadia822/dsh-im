@@ -18,6 +18,7 @@ import { installHostLanguageRpc } from './host-language-rpc.mjs';
 import { installDeliveryRpc } from './delivery-rpc.mjs';
 import { installDeliveryHttp } from './delivery-http.mjs';
 import { createDeliveryService } from './delivery-service.mjs';
+import { installFeishuTools } from './feishu-tools.mjs';
 import { installInboundTtlRpc } from './inbound-ttl-rpc.mjs';
 import { installInjectedContext } from './injected-context.mjs';
 import { installSessionSyncCoordinator } from './session-sync-coordinator.mjs';
@@ -96,6 +97,9 @@ export function createImHostPlugin(internals = {}) {
           ),
           listTargets: async (botId) => (await deliveryService.listTargets(botId)).targets,
           listBots: () => deliveryService.listBots(),
+          listMessages: (botId, targetId, options) => (
+            deliveryService.listMessages(botId, targetId, options)
+          ),
         }));
       }
       const activate = async (readyCtx) => {
@@ -140,9 +144,11 @@ export function createImHostPlugin(internals = {}) {
     if (typeof ctx?.inject === 'function') {
       ctx.inject(['tools', 'systemPrompt'], (artifactCtx) => {
         installOutboundArtifactTool(artifactCtx);
+        installFeishuTools(artifactCtx, deliveryService);
       });
     } else {
       installOutboundArtifactTool(ctx);
+      installFeishuTools(ctx, deliveryService);
     }
     const logger = typeof ctx?.logger === 'function'
       ? ctx.logger(name)

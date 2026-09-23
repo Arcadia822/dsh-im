@@ -278,8 +278,29 @@ export function createDeliveryAdapter({ channel, workspaces, coreController, sta
       if (typeof coreController.sendProactiveText !== 'function') {
         throw new TypeError('delivery controller cannot send proactive text');
       }
-      await coreController.sendProactiveText(botId, normalized, text, options);
+      const result = await coreController.sendProactiveText(botId, normalized, text, options);
+      if (result && typeof result === 'object' && result.sent === true) {
+        return {
+          sent: true,
+          ...(typeof result.messageId === 'string' && result.messageId ? { messageId: result.messageId } : {}),
+          ...(typeof result.threadId === 'string' && result.threadId ? { threadId: result.threadId } : {}),
+          ...(typeof result.rootId === 'string' && result.rootId ? { rootId: result.rootId } : {}),
+        };
+      }
       return { sent: true };
+    },
+    async listMessages(botId, target, options = {}) {
+      const normalized = normalizeDeliveryTarget(channel, targetWithoutSessionSync(target));
+      if (typeof coreController.listMessages !== 'function') {
+        const error = new Error(`Channel ${channel} does not support listMessages`);
+        error.code = 'bad-request';
+        throw error;
+      }
+      return coreController.listMessages(botId, normalized, options);
+    },
+    conversationContextForSession(sessionId) {
+      if (typeof coreController.conversationContextForSession !== 'function') return null;
+      return coreController.conversationContextForSession(sessionId);
     },
     async setSessionSync(botId, targetId, enabled) {
       if (typeof workspaces.setDeliveryTargetSessionSync !== 'function') {

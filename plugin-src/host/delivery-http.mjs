@@ -1,6 +1,7 @@
 import { createDeliveryRpcHandler, DELIVERY_ENDPOINTS } from './delivery-rpc.mjs';
 
 export const DELIVERY_HTTP_PATH = '/api/dsh-im/delivery/messages';
+export const DELIVERY_MESSAGES_LIST_HTTP_PATH = '/api/dsh-im/delivery/messages/list';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -12,10 +13,10 @@ const DELIVERY_ERROR_STATUS = Object.freeze({
   'invalid-target': 422,
   'bot-not-connected': 503,
   'target-rejected': 422,
+  'permission-denied': 403,
   'delivery-failed': 502,
   cancelled: 408,
 });
-
 class HttpRequestError extends Error {
   constructor(status, code) {
     super(code);
@@ -65,7 +66,7 @@ async function readJsonBody(request) {
   }
 }
 
-export function createDeliveryHttpHandler(service) {
+export function createDeliveryHttpHandler(service, endpoint = DELIVERY_ENDPOINTS.send) {
   const dispatch = createDeliveryRpcHandler(service);
   return async (request, response) => {
     if (request.method !== 'POST') {
@@ -90,7 +91,7 @@ export function createDeliveryHttpHandler(service) {
     response.once('close', cancelClosedResponse);
     try {
       const payload = await readJsonBody(request);
-      const result = await dispatch(DELIVERY_ENDPOINTS.send, payload, abort.signal);
+      const result = await dispatch(endpoint, payload, abort.signal);
       if (result.ok) {
         json(response, 200, result.value);
         return;
@@ -115,18 +116,34 @@ export function createDeliveryHttpHandler(service) {
   };
 }
 
+export function createDeliveryMessagesListHttpHandler(service) {
+  return createDeliveryHttpHandler(service, DELIVERY_ENDPOINTS.listMessages);
+}
+
 export function installDeliveryHttp(ctx, service) {
   if (!ctx?.webServer || typeof ctx.webServer.register !== 'function'
     || typeof ctx.effect !== 'function') {
     throw new TypeError('DSH Host WebServer is required');
   }
-  const route = {
+  const sendRoute = {
     kind: 'exact',
     path: DELIVERY_HTTP_PATH,
     handler: createDeliveryHttpHandler(service),
   };
+  const listRoute = {
+    kind: 'exact',
+    path: DELIVERY_MESSAGES_LIST_HTTP_PATH,
+    handler: createDeliveryMessagesListHttpHandler(service),
+  };
   return ctx.effect(
-    () => ctx.webServer.register(route),
-    `dsh-im: ${DELIVERY_HTTP_PATH}`,
+    () => {
+      const unregisterSend = ctx.webServer.register(sendRoute);
+      const unregisterList = ctx.webServer.register(listRoute);
+      return () => {
+        if (typeof unregisterList === 'function') unregisterList();
+        if (typeof unregisterSend === 'function') unregisterSend();
+      };
+    },
+    `dsh-im: ${DELIVERY_HTTP_PATH}, ${DELIVERY_MESSAGES_LIST_HTTP_PATH}`,
   );
 }

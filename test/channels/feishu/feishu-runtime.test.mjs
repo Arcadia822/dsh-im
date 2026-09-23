@@ -6,6 +6,11 @@ import { rememberConnectionTestTarget } from '../../../src/channels/shared/conne
 class FakeClient {
   static instances = [];
   static sent = [];
+  static replies = [];
+  static gets = [];
+  static lists = [];
+  static listHandler = null;
+  static getHandler = null;
 
   constructor(options) {
     this.options = options;
@@ -15,6 +20,24 @@ class FakeClient {
           create: async (payload) => {
             FakeClient.sent.push(payload);
             return { code: 0, data: { message_id: `message-${FakeClient.sent.length}` } };
+          },
+          get: async (payload) => {
+            FakeClient.gets.push(payload);
+            if (FakeClient.getHandler) return FakeClient.getHandler(payload);
+            return {
+              code: 0,
+              data: {
+                items: [{
+                  message_id: payload?.path?.message_id,
+                  chat_id: 'oc_proactive_group',
+                }],
+              },
+            };
+          },
+          list: async (payload) => {
+            FakeClient.lists.push(payload);
+            if (FakeClient.listHandler) return FakeClient.listHandler(payload);
+            return { code: 0, data: { items: [], has_more: false } };
           },
         },
       },
@@ -81,6 +104,11 @@ function fakeLark() {
   FakeWSClient.instances.length = 0;
   FakeClient.instances.length = 0;
   FakeClient.sent.length = 0;
+  FakeClient.replies.length = 0;
+  FakeClient.gets.length = 0;
+  FakeClient.lists.length = 0;
+  FakeClient.listHandler = null;
+  FakeClient.getHandler = null;
   return {
     Domain: { Feishu: 'feishu-domain', Lark: 'lark-domain' },
     LoggerLevel: { info: 'info' },
@@ -802,5 +830,210 @@ test('FeishuRuntime rejects imprecise probe operators and probes before connecti
     runtime.beginCardActionProbe({ expectedOperatorOpenId: '*' }),
     /precise Feishu operator/,
   );
+  await runtime.stop();
+});
+
+test('FeishuRuntime sendProactiveText supports reply options and validates chat ownership', async () => {
+  const runtime = new FeishuRuntime({
+    lark: fakeLark(),
+    botId: 'bot_reply_test',
+    appId: 'cli_reply_test',
+    appSecret: 'secret',
+    ownerOpenIds: ['ou_owner'],
+    harness: { async ensureRunning() {} },
+    state: { hasSeen: () => false },
+  });
+  const starting = runtime.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  FakeWSClient.instances[0].becomeReady();
+  await starting;
+  FakeClient.instances[0].im.v1.message.reply = async (payload) => {
+    FakeClient.replies.push(payload);
+    return {
+      code: 0,
+      data: {
+        message_id: `reply-${FakeClient.replies.length}`,
+        thread_id: 'th_mocked',
+        root_id: payload?.path?.message_id ?? 'root_mocked',
+      },
+    };
+  };
+
+  // 1. replyInThread requires boolean
+  await assert.rejects(
+    runtime.sendProactiveText(
+      { kind: 'group', route: { chatId: 'oc_chat_1' } },
+      'hello',
+      { replyInThread: 'yes' },
+    ),
+    (err) => err?.code === 'bad-request',
+  );
+
+  // 2. replyInThread requires replyToMessageId
+  await assert.rejects(
+    runtime.sendProactiveText(
+      { kind: 'group', route: { chatId: 'oc_chat_1' } },
+      'hello',
+      { replyInThread: true },
+    ),
+    (err) => err?.code === 'bad-request',
+  );
+
+  // 3. Cross-chat refusal on reply
+  FakeClient.getHandler = async () => ({
+    code: 0,
+    data: {
+      items: [{ message_id: 'om_other_chat', chat_id: 'oc_chat_different' }],
+    },
+  });
+  await assert.rejects(
+    runtime.sendProactiveText(
+      { kind: 'group', route: { chatId: 'oc_chat_1' } },
+      'reply cross-chat',
+      { replyToMessageId: 'om_other_chat', replyInThread: true },
+    ),
+    (err) => err?.code === 'target-rejected',
+  );
+
+  // 4. Valid reply with receipts
+  FakeClient.getHandler = async () => ({
+    code: 0,
+    data: {
+      items: [{ message_id: 'om_same_chat', chat_id: 'oc_chat_1' }],
+    },
+  });
+  const result = await runtime.sendProactiveText(
+    { kind: 'group', route: { chatId: 'oc_chat_1' } },
+    'reply valid',
+    { replyToMessageId: 'om_same_chat', replyInThread: true },
+  );
+  assert.deepEqual(result, {
+    sent: true,
+    messageId: 'reply-1',
+    threadId: 'th_mocked',
+    rootId: 'om_same_chat',
+  });
+  assert.equal(FakeClient.replies.length, 1);
+  assert.deepEqual(FakeClient.replies[0], {
+    path: { message_id: 'om_same_chat' },
+    data: {
+      msg_type: 'text',
+      content: JSON.stringify({ text: 'reply valid' }),
+      reply_in_thread: true,
+    },
+  });
+
+  await runtime.stop();
+});
+
+test('FeishuRuntime listMessages enforces group targets, thread chat scope, and pagination', async () => {
+  const runtime = new FeishuRuntime({
+    lark: fakeLark(),
+    botId: 'bot_list_test',
+    appId: 'cli_list_test',
+    appSecret: 'secret',
+    ownerOpenIds: ['ou_owner'],
+    harness: { async ensureRunning() {} },
+    state: { hasSeen: () => false },
+  });
+  const starting = runtime.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  FakeWSClient.instances[0].becomeReady();
+  await starting;
+
+  // 1. Only group targets supported
+  await assert.rejects(
+    runtime.listMessages({ kind: 'user', route: { openId: 'ou_user' } }),
+    (err) => err?.code === 'bad-request',
+  );
+
+  // 2. Thread history rejects startTime/endTime
+  await assert.rejects(
+    runtime.listMessages(
+      { kind: 'group', route: { chatId: 'oc_group_1' } },
+      { threadId: 'ot_123', startTime: 1700000000 },
+    ),
+    (err) => err?.code === 'bad-request',
+  );
+
+  // 3. Thread cross-chat refusal
+  FakeClient.listHandler = async () => ({
+    code: 0,
+    data: {
+      items: [
+        {
+          message_id: 'om_msg_1',
+          chat_id: 'oc_foreign_group',
+          thread_id: 'ot_123',
+          msg_type: 'text',
+          body: { content: JSON.stringify({ text: 'foreign message' }) },
+          create_time: '1700000000000',
+        },
+      ],
+      has_more: false,
+    },
+  });
+  await assert.rejects(
+    runtime.listMessages(
+      { kind: 'group', route: { chatId: 'oc_group_1' } },
+      { threadId: 'ot_123' },
+    ),
+    (err) => err?.code === 'target-rejected',
+  );
+
+  // 4. Thread pagination and message normalization with deleted anchors
+  FakeClient.listHandler = async (payload) => {
+    assert.equal(payload.params.container_id_type, 'thread');
+    assert.equal(payload.params.container_id, 'ot_123');
+    assert.equal(payload.params.page_size, 10);
+    assert.equal(payload.params.page_token, 'token_xyz');
+    return {
+      code: 0,
+      data: {
+        items: [
+          {
+            message_id: 'om_normal',
+            chat_id: 'oc_group_1',
+            thread_id: 'ot_123',
+            msg_type: 'text',
+            sender: { id: 'ou_sender_1', sender_type: 'user', sender_name: 'Alice' },
+            body: { content: JSON.stringify({ text: 'hello @test' }) },
+            mentions: [{ key: '@test', id: 'bot_1' }],
+            create_time: '1700000000000',
+            deleted: false,
+          },
+          {
+            message_id: 'om_deleted_anchor',
+            chat_id: 'oc_group_1',
+            thread_id: 'ot_123',
+            msg_type: 'text',
+            sender: { id: 'ou_sender_2', sender_type: 'user' },
+            body: { content: '' },
+            create_time: '1700000001000',
+            deleted: true,
+          },
+        ],
+        has_more: true,
+        page_token: 'next_page_token',
+      },
+    };
+  };
+
+  const listRes = await runtime.listMessages(
+    { kind: 'group', route: { chatId: 'oc_group_1' } },
+    { threadId: 'ot_123', pageSize: 10, pageToken: 'token_xyz' },
+  );
+
+  assert.equal(listRes.hasMore, true);
+  assert.equal(listRes.pageToken, 'next_page_token');
+  assert.equal(listRes.items.length, 2);
+  assert.equal(listRes.items[0].messageId, 'om_normal');
+  assert.equal(listRes.items[0].text, 'hello');
+  assert.equal(listRes.items[0].deleted, false);
+  assert.equal(listRes.items[0].createdAt, new Date(1700000000000).toISOString());
+  assert.equal(listRes.items[1].messageId, 'om_deleted_anchor');
+  assert.equal(listRes.items[1].deleted, true);
+  assert.equal(listRes.items[1].text, '');
+
   await runtime.stop();
 });

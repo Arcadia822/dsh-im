@@ -24,6 +24,7 @@ const DELIVERY_ERROR_CODES = new Set([
   'invalid-target',
   'bot-not-connected',
   'target-rejected',
+  'permission-denied',
   'delivery-failed',
   'session-sync-unavailable',
   'cancelled',
@@ -290,7 +291,47 @@ export class DeliveryService {
     }
   }
 
-  async send(botId, targetIdOrDraft, text, { signal, format = 'plain' } = {}) {
+  async listMessages(botId, targetId, options = {}) {
+    const id = botIdOf(botId);
+    const targetKey = targetIdOf(targetId);
+    cancellation(options?.signal);
+    const adapter = await this.#adapterFor(id);
+    if (adapter.channel !== 'feishu') {
+      throw deliveryError('bad-request', 'Message history is only supported for Feishu');
+    }
+    try {
+      const targets = await adapter.listTargets(id);
+      if (!Array.isArray(targets)) throw new TypeError('Adapter returned invalid targets');
+      const target = targets.find((candidate) => candidate?.targetId === targetKey);
+      if (!target) throw deliveryError('unknown-target', 'Unknown target');
+      if (target.kind !== 'group') {
+        throw deliveryError('bad-request', 'Message history is only supported for group targets');
+      }
+      if (typeof adapter.listMessages !== 'function') {
+        throw deliveryError('bad-request', 'Adapter does not support listMessages');
+      }
+      cancellation(options?.signal);
+      return await adapter.listMessages(id, target, options);
+    } catch (error) {
+      if (options?.signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR') {
+        throw deliveryError('cancelled', 'Request cancelled', { cause: error });
+      }
+      throw publicOperationError(error);
+    }
+  }
+  async conversationContextForSession(sessionId) {
+    if (typeof sessionId !== 'string' || !sessionId) return null;
+    for (const { adapter } of this.#adapters.values()) {
+      if (typeof adapter?.conversationContextForSession === 'function') {
+        const ctx = adapter.conversationContextForSession(sessionId);
+        if (ctx && typeof ctx === 'object') return ctx;
+      }
+    }
+    return null;
+  }
+
+
+  async send(botId, targetIdOrDraft, text, { signal, format = 'plain', replyToMessageId, replyInThread } = {}) {
     const id = botIdOf(botId);
     const targetKey = typeof targetIdOrDraft === 'string'
       ? targetIdOf(targetIdOrDraft)
@@ -302,8 +343,27 @@ export class DeliveryService {
     if (format !== 'plain' && format !== 'markdown') {
       throw deliveryError('bad-request', 'Message format must be plain or markdown');
     }
+    const hasReplyFields = replyToMessageId !== undefined || replyInThread !== undefined;
+    if (hasReplyFields) {
+      if (replyToMessageId !== undefined) {
+        if (typeof replyToMessageId !== 'string' || !replyToMessageId.trim()) {
+          throw deliveryError('bad-request', 'replyToMessageId must be a non-empty string');
+        }
+      }
+      if (replyInThread !== undefined) {
+        if (typeof replyInThread !== 'boolean') {
+          throw deliveryError('bad-request', 'replyInThread must be a boolean');
+        }
+        if (replyInThread && replyToMessageId === undefined) {
+          throw deliveryError('bad-request', 'replyInThread requires replyToMessageId');
+        }
+      }
+    }
     cancellation(signal);
     const adapter = await this.#adapterFor(id);
+    if (hasReplyFields && adapter.channel !== 'feishu') {
+      throw deliveryError('bad-request', 'Reply options are only supported for Feishu');
+    }
     try {
       let target;
       if (draft) {
@@ -314,11 +374,25 @@ export class DeliveryService {
         target = targets.find((candidate) => candidate?.targetId === targetKey);
         if (!target) throw deliveryError('unknown-target', 'Unknown target');
       }
+      if (hasReplyFields && target.kind !== 'group') {
+        throw deliveryError('bad-request', 'Reply options are only supported for group targets');
+      }
       cancellation(signal);
-      await adapter.sendText(id, target, text, {
+      const sendOptions = {
         signal,
         ...(format === 'markdown' ? { format } : {}),
-      });
+        ...(replyToMessageId !== undefined ? { replyToMessageId: replyToMessageId.trim() } : {}),
+        ...(replyInThread !== undefined ? { replyInThread } : {}),
+      };
+      const result = await adapter.sendText(id, target, text, sendOptions);
+      if (result && typeof result === 'object' && result.sent === true) {
+        return {
+          sent: true,
+          ...(typeof result.messageId === 'string' && result.messageId ? { messageId: result.messageId } : {}),
+          ...(typeof result.threadId === 'string' && result.threadId ? { threadId: result.threadId } : {}),
+          ...(typeof result.rootId === 'string' && result.rootId ? { rootId: result.rootId } : {}),
+        };
+      }
       return { sent: true };
     } catch (error) {
       if (signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR') {

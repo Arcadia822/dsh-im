@@ -79,6 +79,14 @@ export class StateStore {
   sessionFor(key) {
     return this.#state.sessions[key] ?? null;
   }
+  keyForSession(sessionId) {
+    if (typeof sessionId !== 'string' || !sessionId) return null;
+    for (const [key, id] of Object.entries(this.#state.sessions)) {
+      if (id === sessionId) return key;
+    }
+    return null;
+  }
+
 
   async setSession(key, sessionId) {
     this.#state.sessions[key] = sessionId;

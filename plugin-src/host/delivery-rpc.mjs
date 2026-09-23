@@ -5,6 +5,7 @@ export const DELIVERY_RPC_CHANNEL = '/dsh-im-delivery';
 export const DELIVERY_TEST_MESSAGE = 'DSH-IM 主动投递测试成功。';
 export const DELIVERY_ENDPOINTS = Object.freeze({
   send: 'message.send',
+  listMessages: 'message.list',
   listTargets: 'target.list',
   listSuggestions: 'target.suggestion.list',
   createTarget: 'target.create',
@@ -13,7 +14,6 @@ export const DELIVERY_ENDPOINTS = Object.freeze({
   setSessionSync: 'target.session-sync.set',
   testTarget: 'target.test',
 });
-
 const ENDPOINTS = new Set(Object.values(DELIVERY_ENDPOINTS));
 const PUBLIC_ERRORS = new Set([
   'bad-request',
@@ -23,29 +23,66 @@ const PUBLIC_ERRORS = new Set([
   'invalid-target',
   'bot-not-connected',
   'target-rejected',
+  'permission-denied',
   'delivery-failed',
   'session-sync-unavailable',
   'cancelled',
 ]);
 
-function isRecord(value) {
+export function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function exactKeys(value, keys) {
+export function exactKeys(value, keys) {
   return isRecord(value)
     && Object.keys(value).length === keys.length
     && Object.keys(value).every((key) => keys.includes(key));
 }
 
-function validBotId(value) {
+export function validBotId(value) {
   return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 }
 
-function validTargetId(value) {
+export function validTargetId(value) {
   return typeof value === 'string' && /^[A-Za-z0-9._:@-]{1,128}$/.test(value);
 }
 
+export function validTimeFilter(value) {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0;
+  }
+  if (typeof value === 'string') {
+    return /^\d{1,16}$/.test(value);
+  }
+  return false;
+}
+
+export function validateListMessagesOptions(options) {
+  if (options === undefined) return true;
+  if (!isRecord(options)) return false;
+  const allowed = ['threadId', 'startTime', 'endTime', 'pageSize', 'pageToken'];
+  if (Object.keys(options).some((k) => !allowed.includes(k))) return false;
+  if (options.threadId !== undefined) {
+    if (typeof options.threadId !== 'string' || !options.threadId.trim()) return false;
+  }
+  if (options.startTime !== undefined) {
+    if (!validTimeFilter(options.startTime)) return false;
+  }
+  if (options.endTime !== undefined) {
+    if (!validTimeFilter(options.endTime)) return false;
+  }
+  if (options.threadId !== undefined && (options.startTime !== undefined || options.endTime !== undefined)) {
+    return false;
+  }
+  if (options.pageSize !== undefined
+    && (!Number.isInteger(options.pageSize) || options.pageSize < 1 || options.pageSize > 50)) {
+    return false;
+  }
+  if (options.pageToken !== undefined) {
+    if (typeof options.pageToken !== 'string' || !options.pageToken.trim()) return false;
+  }
+  return true;
+}
 function validTarget(value, { targetId }) {
   const keys = targetId ? ['targetId', 'name', 'kind', 'route'] : ['name', 'kind', 'route'];
   if (!isRecord(value) || Object.keys(value).some((key) => !keys.includes(key))) return false;
@@ -62,14 +99,33 @@ function validDraftTarget(value) {
     && isRecord(value.route);
 }
 
-function validPayload(endpoint, payload) {
+function validSendPayload(payload) {
+  if (!isRecord(payload)) return false;
+  const allowedKeys = ['botId', 'targetId', 'text', 'format', 'replyToMessageId', 'replyInThread'];
+  if (Object.keys(payload).some((key) => !allowedKeys.includes(key))) return false;
+  if (!validBotId(payload.botId) || !validTargetId(payload.targetId)) return false;
+  if (typeof payload.text !== 'string' || !payload.text.trim()) return false;
+  if (payload.format !== undefined && !['plain', 'markdown'].includes(payload.format)) return false;
+  if (payload.replyToMessageId !== undefined) {
+    if (typeof payload.replyToMessageId !== 'string' || !payload.replyToMessageId.trim()) return false;
+  }
+  if (payload.replyInThread !== undefined) {
+    if (typeof payload.replyInThread !== 'boolean') return false;
+    if (payload.replyInThread && payload.replyToMessageId === undefined) return false;
+  }
+  return true;
+}
+
+export function validPayload(endpoint, payload) {
   if (!ENDPOINTS.has(endpoint) || !isRecord(payload)) return false;
   if (endpoint === DELIVERY_ENDPOINTS.send) {
-    return (exactKeys(payload, ['botId', 'targetId', 'text'])
-        || (exactKeys(payload, ['botId', 'targetId', 'text', 'format'])
-          && ['plain', 'markdown'].includes(payload.format)))
-      && validBotId(payload.botId) && validTargetId(payload.targetId)
-      && typeof payload.text === 'string' && Boolean(payload.text.trim());
+    return validSendPayload(payload);
+  }
+  if (endpoint === DELIVERY_ENDPOINTS.listMessages) {
+    const allowed = ['botId', 'targetId', 'options'];
+    if (Object.keys(payload).some((k) => !allowed.includes(k))) return false;
+    if (!validBotId(payload.botId) || !validTargetId(payload.targetId)) return false;
+    return validateListMessagesOptions(payload.options);
   }
   if (endpoint === DELIVERY_ENDPOINTS.listTargets
     || endpoint === DELIVERY_ENDPOINTS.listSuggestions) {
@@ -133,6 +189,16 @@ export function createDeliveryRpcHandler(service) {
         value = await service.send(payload.botId, payload.targetId, payload.text, {
           signal,
           ...(payload.format === undefined ? {} : { format: payload.format }),
+          ...(payload.replyToMessageId === undefined ? {} : { replyToMessageId: payload.replyToMessageId.trim() }),
+          ...(payload.replyInThread === undefined ? {} : { replyInThread: payload.replyInThread }),
+        });
+      } else if (endpoint === DELIVERY_ENDPOINTS.listMessages) {
+        if (typeof service.listMessages !== 'function') {
+          throw new TypeError('listMessages is unavailable');
+        }
+        value = await service.listMessages(payload.botId, payload.targetId, {
+          signal,
+          ...(payload.options ?? {}),
         });
       } else if (endpoint === DELIVERY_ENDPOINTS.listTargets) {
         value = await service.listTargets(payload.botId);

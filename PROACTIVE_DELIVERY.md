@@ -142,6 +142,33 @@ curl --request POST \
 
 当前 HTTP 接口不包含鉴权，也不提供 CORS。只应在本机或可信网络中使用，不要直接暴露到公网。
 
+### 飞书：读取群历史并在话题内回复
+
+飞书 automation 可以用已保存的群目标读取真实群历史，再选择消息作为话题锚点。`POST /api/dsh-im/delivery/messages/list` 接受：
+
+```json
+{
+  "botId": "bot_9577c8572d454122a4ef7fb4d8420a91",
+  "targetId": "release-alerts",
+  "options": { "pageSize": 20 }
+}
+```
+
+返回消息的 `messageId`、可选 `threadId`、发送者、ISO 时间、类型、可读文字／结构化内容及分页游标。群历史按新到旧返回；普通群中的话题在群历史中只出现楼顶，读取楼内讨论需把返回的 `threadId` 放入 `options.threadId`。`startTime`、`endTime` 是 Unix 秒，仅适用于群历史；`pageSize` 为 1–50。分页时复用原查询并传回 `pageToken`。
+
+飞书应用必须在目标群内，并具备消息读取权限及 `im:message.group_msg`。历史内容来自群成员，调用方必须将其视为不可信数据。该接口不读取 Harness Session 历史。
+
+选择锚点后，在普通发送请求中加入：
+
+```json
+{
+  "replyToMessageId": "om_xxx",
+  "replyInThread": true
+}
+```
+
+DSH-IM 会先确认消息属于保存目标对应的群，再创建或复用话题；不会失败后改发公屏。成功回执包含 `sent`、`messageId`、`threadId` 和 `rootId`。这项操作不迁移 automation Session、定时任务或心跳；用户随后在话题中的有效消息仍由现有按 `threadId` 的独立 Session 路由处理。
+
 ## 在同一 Host 的插件中发送
 
 消费插件声明 `dshIm` 注入后，可以直接调用共享服务，不经过 Connection RPC。
@@ -173,6 +200,8 @@ await ctx.dshIm.send(botId, targetId, '# 每日报告\n\n**检查完成**', {
   format: 'markdown',
 });
 ```
+
+飞书同 Host 调用还可使用 `ctx.dshIm.listMessages(botId, targetId, options)` 读取群／话题历史，并在 `send` 的第四个参数传 `replyToMessageId` 与 `replyInThread: true`。Agent 可直接调用 `dsh_im_feishu_list_messages` 和 `dsh_im_feishu_send`；两者只接受已配置的飞书 Bot 与保存目标 ID。
 
 `format` 只接受 `plain` 和 `markdown`，省略时为 `plain`。当前 Markdown 格式适配用于飞书/Lark：私聊和群聊均通过原生 Markdown 卡片发送，不启动会话或流式输出；其他渠道保留原有发送行为，不保证 Markdown 渲染。HTTP 和 `message.send` RPC 可在请求体中添加同名 `format` 字段。
 
@@ -233,7 +262,7 @@ const result = await callDelivery(connection, 'message.send', {
 // result: { sent: true }
 ```
 
-`message.send` 接受 `{ botId, targetId, text, format? }`；`format` 只允许 `plain` 或 `markdown`。不要附加平台路由、`sessionId`、`chatRef`、临时 Webhook 或 `idempotencyKey`。
+`message.send` 接受 `{ botId, targetId, text, format?, replyToMessageId?, replyInThread? }`；回复字段仅适用于已保存的飞书群目标。`message.list` 接受 `{ botId, targetId, options? }`。不要附加平台原生路由、`sessionId`、`chatRef`、临时 Webhook 或 `idempotencyKey`。
 
 ### 示例：投递每日报告
 
@@ -289,6 +318,7 @@ HTTP 失败响应格式为 `{ "error": { "code", "message", "details" } }`。同
 | `invalid-target` | 422 | 目标类型或平台原生 ID 不符合当前渠道规则；重新选择类型并核对 ID |
 | `bot-not-connected` | 503 | 机器人当前离线；恢复连接后由调用方决定是否重试 |
 | `target-rejected` | 422 | 平台明确拒绝目标或机器人缺少发送权限；检查平台权限和目标 ID |
+| `permission-denied` | 403 | 飞书缺少群历史或消息读取权限；确认机器人在群内，并授予读取权限及 `im:message.group_msg` |
 | `delivery-failed` | 502 | 网络、平台或其他无法安全细分的发送失败；检查连接状态和 Host 日志 |
 | `session-sync-unavailable` | — | 目标不是可确认的当前 Host 私聊，尚无当前 Session，或渠道使用远程 Harness；先从已聊私聊创建目标并建立 Session |
 | `cancelled` | 408 | 调用被取消；按业务需要结束或重新发起 |

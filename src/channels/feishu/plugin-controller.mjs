@@ -1,5 +1,6 @@
 import { RegistrationManager } from './registration-manager.mjs';
 import { SLASH_COMMAND_TENANT_SCOPES } from './slash-command-registry.mjs';
+import { FEISHU_GROUP_MESSAGE_SCOPE } from './group-message-permission-manager.mjs';
 
 export const FEISHU_SECRET_REF = 'DSH_FEISHU_APP_SECRET';
 
@@ -8,6 +9,7 @@ export const REQUIRED_TENANT_SCOPES = Object.freeze([
   'im:message.group_at_msg:readonly',
   'im:message.group_at_msg.include_bot:readonly',
   'im:message:readonly',
+  FEISHU_GROUP_MESSAGE_SCOPE,
   'im:message:send_as_bot',
   'im:message.reactions:write_only',
   'im:message:recall',

@@ -44,7 +44,7 @@ export function conversationKey(event) {
   return `group:${chatId}`;
 }
 
-function parsedMessageContent(event) {
+export function parsedMessageContent(event) {
   const value = event?.message?.content;
   if (value && typeof value === 'object') return value;
   if (typeof value !== 'string') return null;
@@ -90,7 +90,7 @@ function jsonRecord(value) {
   }
 }
 
-function interactiveCardRoot(parsed) {
+export function interactiveCardRoot(parsed) {
   const root = objectRecord(parsed);
   if (!root) return null;
   // raw_card_content wraps CardKit entities in json_card. Keep direct Card
@@ -175,7 +175,7 @@ function cardElementText(
     .join('\n');
 }
 
-function interactiveCardText(parsed) {
+export function interactiveCardText(parsed) {
   const card = interactiveCardRoot(parsed);
   if (!card) return '';
   const budget = { remaining: FEISHU_CARD_TEXT_MAX_NODES };
@@ -194,7 +194,7 @@ function interactiveCardText(parsed) {
   return [title, content].filter(Boolean).join('\n');
 }
 
-function postContent(event, parsed = parsedMessageContent(event)) {
+export function postContent(event, parsed = parsedMessageContent(event)) {
   if (event?.message?.message_type !== 'post') return null;
   if (!parsed) return null;
 
@@ -451,7 +451,7 @@ function feishuReplyAttachments(messageType, parsed, post) {
   return [];
 }
 
-function feishuReplyReference(event, client) {
+export function feishuReplyReference(event, client) {
   const messageId = feishuReplyTargetId(event);
   if (!messageId) return null;
   const chatId = nonEmptyString(event?.message?.chat_id);

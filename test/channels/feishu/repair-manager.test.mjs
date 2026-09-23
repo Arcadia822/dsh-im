@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   CallbackRepairManager,
   FEISHU_MESSAGE_READ_SCOPE,
+  FEISHU_GROUP_MESSAGE_SCOPE,
   FEISHU_RESOURCE_SCOPE,
   assertCallbackRepairUrl,
 } from '../../../src/channels/feishu/repair-manager.mjs';
@@ -43,6 +44,7 @@ test('CallbackRepairManager targets one real app with only the callback and requ
     scopes: {
       tenant: [
         FEISHU_MESSAGE_READ_SCOPE,
+        FEISHU_GROUP_MESSAGE_SCOPE,
         FEISHU_RESOURCE_SCOPE,
         'im:message.group_at_msg.include_bot:readonly',
         ...SLASH_COMMAND_TENANT_SCOPES,

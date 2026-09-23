@@ -384,3 +384,91 @@ test('channel-specific route kinds stay strict', () => {
     (error) => error?.code === 'invalid-target',
   );
 });
+
+test('delivery adapter preserves delivery receipts with messageId/threadId/rootId', async () => {
+  const target = {
+    targetId: 'dev-chat',
+    name: 'Dev Chat',
+    kind: 'group',
+    route: { chatId: 'oc_123' },
+  };
+  const workspaces = {
+    has: () => true,
+    listDeliveryTargets: () => [target],
+    listBotIds: () => ['bot-feishu'],
+  };
+  const coreController = {
+    async sendProactiveText() {
+      return {
+        sent: true,
+        messageId: 'om_reply_1',
+        threadId: 'omt_1',
+        rootId: 'om_root_1',
+      };
+    },
+  };
+  const adapter = createDeliveryAdapter({
+    channel: 'feishu',
+    workspaces,
+    coreController,
+    stateFor: async () => ({ snapshot: () => ({ sessions: {} }) }),
+  });
+
+  const receipt = await adapter.sendText('bot-feishu', target, 'hi', {
+    replyToMessageId: 'om_root_1',
+    replyInThread: true,
+  });
+  assert.deepEqual(receipt, {
+    sent: true,
+    messageId: 'om_reply_1',
+    threadId: 'omt_1',
+    rootId: 'om_root_1',
+  });
+});
+
+test('delivery adapter delegates listMessages to coreController', async () => {
+  const target = {
+    targetId: 'dev-chat',
+    name: 'Dev Chat',
+    kind: 'group',
+    route: { chatId: 'oc_123' },
+  };
+  const workspaces = {
+    has: () => true,
+    listDeliveryTargets: () => [target],
+    listBotIds: () => ['bot-feishu'],
+  };
+  const calls = [];
+  const coreController = {
+    sendProactiveText() {},
+    async listMessages(botId, targetParam, options) {
+      calls.push([botId, targetParam, options]);
+      return { items: [{ messageId: 'om_item_1' }], hasMore: false };
+    },
+  };
+  const adapter = createDeliveryAdapter({
+    channel: 'feishu',
+    workspaces,
+    coreController,
+    stateFor: async () => ({ snapshot: () => ({ sessions: {} }) }),
+  });
+
+  const result = await adapter.listMessages('bot-feishu', target, { pageSize: 20 });
+  assert.deepEqual(result, { items: [{ messageId: 'om_item_1' }], hasMore: false });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'bot-feishu');
+  assert.equal(calls[0][1].targetId, 'dev-chat');
+  assert.equal(calls[0][2].pageSize, 20);
+
+  // Controller lacking listMessages throws bad-request
+  const adapterWithoutList = createDeliveryAdapter({
+    channel: 'feishu',
+    workspaces,
+    coreController: { sendProactiveText() {} },
+    stateFor: async () => ({ snapshot: () => ({ sessions: {} }) }),
+  });
+  await assert.rejects(
+    adapterWithoutList.listMessages('bot-feishu', target),
+    { code: 'bad-request' },
+  );
+});

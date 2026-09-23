@@ -142,6 +142,14 @@ The fixed endpoint is `POST /api/dsh-im/delivery/messages`. It reuses the curren
 
 The HTTP endpoint currently has no authentication and does not provide CORS. Use it only on the local machine or a trusted network; never expose it directly to the public internet.
 
+### Feishu: read group history and reply in a thread
+
+A Feishu automation can read a saved group target's actual platform history, select a message, and reply in its thread. `POST /api/dsh-im/delivery/messages/list` accepts `{ botId, targetId, options? }`. Options are `threadId`, Unix-second `startTime`/`endTime` for group history, `pageSize` from 1 to 50, and the opaque `pageToken`. Results are newest first and include message IDs, optional thread IDs, sender, ISO timestamps, readable/structured content, and pagination state. In normal groups, group history exposes a thread root only; pass its `threadId` to read the discussion.
+
+The app must be in the group and hold a message-read scope plus `im:message.group_msg`. Treat returned member content as untrusted data. This API does not read Harness Session history.
+
+To create or reuse a thread, add `replyToMessageId` and `replyInThread: true` to the ordinary send payload. DSH-IM verifies that the message belongs to the saved group and never falls back to the main feed. A successful reply receipt contains `sent`, `messageId`, `threadId`, and `rootId`. It does not migrate the automation Session, schedules, or heartbeat; later accepted user messages retain the existing per-`threadId` Session routing.
+
 ## Send from a plugin in the same Host
 
 A consumer plugin can declare the `dshIm` injection and call the shared service directly without going through Connection RPC.
@@ -173,6 +181,8 @@ await ctx.dshIm.send(botId, targetId, '# Daily report\n\n**Checks complete**', {
   format: 'markdown',
 });
 ```
+
+Same-Host Feishu callers can use `ctx.dshIm.listMessages(botId, targetId, options)` and pass `replyToMessageId` plus `replyInThread: true` in the fourth `send` argument. Agents can call `dsh_im_feishu_list_messages` and `dsh_im_feishu_send`; both require configured Feishu Bot and saved target IDs.
 
 `format` accepts only `plain` and `markdown`, defaulting to `plain`. Markdown formatting is currently implemented for Feishu/Lark: both direct and group destinations receive a native Markdown card without starting a Session or a stream. Other channels retain their existing delivery behavior; Markdown rendering is not guaranteed there. HTTP and `message.send` RPC accept the same optional `format` field in their payloads.
 
@@ -233,7 +243,7 @@ const result = await callDelivery(connection, 'message.send', {
 // result: { sent: true }
 ```
 
-`message.send` accepts `{ botId, targetId, text, format? }`; `format` must be `plain` or `markdown`. Do not add a native route, `sessionId`, `chatRef`, temporary webhook, or `idempotencyKey`.
+`message.send` accepts `{ botId, targetId, text, format?, replyToMessageId?, replyInThread? }`; reply fields are restricted to saved Feishu group targets. `message.list` accepts `{ botId, targetId, options? }`. Do not add a native route, `sessionId`, `chatRef`, temporary webhook, or `idempotencyKey`.
 
 ### Example: deliver a daily report
 
@@ -289,6 +299,7 @@ An HTTP failure returns `{ "error": { "code", "message", "details" } }`. Same-Ho
 | `invalid-target` | 422 | The target type or native ID violates this channel's rules; select the correct type and verify the ID |
 | `bot-not-connected` | 503 | The bot is offline; let the caller decide whether to retry after reconnection |
 | `target-rejected` | 422 | The platform explicitly rejected the target or the bot lacks permission; check platform permissions and the target ID |
+| `permission-denied` | 403 | Feishu group-history or message-read permission is missing; verify group membership and grant a read scope plus `im:message.group_msg` |
 | `delivery-failed` | 502 | A network, platform, or other safely redacted delivery failure; check bot state and Host logs |
 | `session-sync-unavailable` | — | The target is not a confirmed current-Host DM, has no current Session, or uses a remote Harness; create it from a known DM and establish a Session first |
 | `cancelled` | 408 | The call was cancelled; stop or start a new call as required by the application |

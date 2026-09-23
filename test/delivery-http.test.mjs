@@ -5,7 +5,9 @@ import test from 'node:test';
 
 import {
   DELIVERY_HTTP_PATH,
+  DELIVERY_MESSAGES_LIST_HTTP_PATH,
   createDeliveryHttpHandler,
+  createDeliveryMessagesListHttpHandler,
   installDeliveryHttp,
 } from '../plugin-src/host/delivery-http.mjs';
 
@@ -172,11 +174,12 @@ test('delivery HTTP maps only stable delivery errors to HTTP status codes', asyn
   });
 });
 
-test('delivery HTTP installs one exact WebServer route with Cordis lifecycle ownership', () => {
+test('delivery HTTP installs both send and list WebServer routes with Cordis lifecycle ownership', () => {
   const { service } = serviceFixture();
   const registrations = [];
   const effects = [];
-  const dispose = () => {};
+  let disposeCount = 0;
+  const dispose = () => { disposeCount += 1; };
   const ctx = {
     webServer: {
       register(route) {
@@ -190,10 +193,75 @@ test('delivery HTTP installs one exact WebServer route with Cordis lifecycle own
     },
   };
 
-  assert.equal(installDeliveryHttp(ctx, service), dispose);
-  assert.deepEqual(effects, [`dsh-im: ${DELIVERY_HTTP_PATH}`]);
-  assert.equal(registrations.length, 1);
+  const cleanup = installDeliveryHttp(ctx, service);
+  assert.equal(typeof cleanup, 'function');
+  cleanup();
+  assert.equal(disposeCount, 2);
+  assert.deepEqual(effects, [`dsh-im: ${DELIVERY_HTTP_PATH}, ${DELIVERY_MESSAGES_LIST_HTTP_PATH}`]);
+  assert.equal(registrations.length, 2);
   assert.equal(registrations[0].kind, 'exact');
   assert.equal(registrations[0].path, DELIVERY_HTTP_PATH);
   assert.equal(typeof registrations[0].handler, 'function');
+  assert.equal(registrations[1].kind, 'exact');
+  assert.equal(registrations[1].path, DELIVERY_MESSAGES_LIST_HTTP_PATH);
+  assert.equal(typeof registrations[1].handler, 'function');
+});
+
+test('delivery HTTP messages list endpoint forwards valid request to service and handles errors', async () => {
+  const { service, calls } = serviceFixture();
+  service.listMessages = async (...args) => {
+    calls.push(['listMessages', ...args]);
+    return { items: [{ messageId: 'om_http_1' }], hasMore: false };
+  };
+  await withServer(createDeliveryMessagesListHttpHandler(service), async (url) => {
+    const payload = {
+      botId: 'bot_one',
+      targetId: 'target_one',
+      options: { pageSize: 15 },
+    };
+    const result = await request(url, { body: JSON.stringify(payload) });
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body, { items: [{ messageId: 'om_http_1' }], hasMore: false });
+    assert.equal(calls[0][0], 'listMessages');
+    assert.equal(calls[0][1], 'bot_one');
+    assert.equal(calls[0][2], 'target_one');
+    assert.equal(calls[0][3].pageSize, 15);
+
+    // Permission denied maps to 403
+    service.listMessages = async () => {
+      const err = new Error('Permission denied');
+      err.code = 'permission-denied';
+      throw err;
+    };
+    const permDenied = await request(url, { body: JSON.stringify(payload) });
+    assert.equal(permDenied.status, 403);
+    assert.equal(permDenied.body.error.code, 'permission-denied');
+
+    // Bad request
+    const badReq = await request(url, { body: JSON.stringify({ botId: 'bot_one' }) });
+    assert.equal(badReq.status, 400);
+    assert.equal(badReq.body.error.code, 'bad-request');
+  });
+});
+
+test('delivery HTTP send endpoint accepts reply fields and returns receipts', async () => {
+  const { service, calls } = serviceFixture();
+  service.send = async (...args) => {
+    calls.push(['send', ...args]);
+    return { sent: true, messageId: 'om_new_msg', threadId: 'omt_thread' };
+  };
+  await withServer(createDeliveryHttpHandler(service), async (url) => {
+    const payload = {
+      botId: 'bot_one',
+      targetId: 'target_one',
+      text: 'reply message',
+      replyToMessageId: 'om_root',
+      replyInThread: true,
+    };
+    const result = await request(url, { body: JSON.stringify(payload) });
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body, { sent: true, messageId: 'om_new_msg', threadId: 'omt_thread' });
+    assert.equal(calls[0][4].replyToMessageId, 'om_root');
+    assert.equal(calls[0][4].replyInThread, true);
+  });
 });

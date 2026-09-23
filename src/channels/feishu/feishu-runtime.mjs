@@ -14,6 +14,10 @@ import {
   sendRememberedConnectionTest,
 } from '../shared/connection-test.mjs';
 import { t } from '../shared/i18n.mjs';
+import {
+  normalizeFeishuHistoryMessage,
+  normalizeTimeFilterToSeconds,
+} from './history-message-parser.mjs';
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const CALLBACK_PROBE_SUCCESS_NOTICE = '✅ 修复完成：已实测收到 card.action.trigger，菜单按钮现在可用。';
@@ -24,6 +28,11 @@ const REUSABLE_WS_STATES = new Set(['connected', 'connecting', 'reconnecting']);
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function messageErrorCode(value) {
+  const code = Number(value?.response?.data?.code ?? value?.data?.code ?? value?.code);
+  return code === 99991672 || code === 230027 ? 'permission-denied' : 'target-rejected';
 }
 
 function strictCardOperatorOpenId(event) {
@@ -627,8 +636,29 @@ export class FeishuRuntime {
       },
     });
   }
+  conversationContextForSession(sessionId) {
+    const key = typeof this.#state?.keyForSession === 'function'
+      ? this.#state.keyForSession(sessionId)
+      : null;
+    if (!key || typeof key !== 'string') return null;
+    const segments = key.split(':');
+    if (segments[0] !== 'group' || !segments[1]) return null;
+    const chatId = segments[1];
+    const threadId = segments[2] === 'thread' && segments[3] ? segments[3] : null;
+    return {
+      botId: this.#botId,
+      chatId,
+      ...(threadId ? { threadId } : {}),
+    };
+  }
 
-  async sendProactiveText(target, text, { signal, format = 'plain' } = {}) {
+
+  async sendProactiveText(target, text, {
+    signal,
+    format = 'plain',
+    replyToMessageId,
+    replyInThread,
+  } = {}) {
     if (!this.#status.ready || !this.#client) {
       const error = new Error('飞书机器人尚未连接');
       error.code = 'bot-not-connected';
@@ -651,27 +681,227 @@ export class FeishuRuntime {
       error.code = 'bad-request';
       throw error;
     }
+    if (replyInThread !== undefined && typeof replyInThread !== 'boolean') {
+      const error = new TypeError('replyInThread must be a boolean');
+      error.code = 'bad-request';
+      throw error;
+    }
+    if (replyInThread !== undefined && !nonEmptyString(replyToMessageId)) {
+      const error = new TypeError('replyInThread requires replyToMessageId');
+      error.code = 'bad-request';
+      throw error;
+    }
+    const normalizedReplyTo = nonEmptyString(replyToMessageId);
+    if (replyToMessageId !== undefined && (!normalizedReplyTo || target?.kind !== 'group')) {
+      const error = new TypeError('Replies require a message ID and a saved group target');
+      error.code = 'bad-request';
+      throw error;
+    }
     signal?.throwIfAborted();
-    // Use the same native Markdown element as chat, without opening a stream
-    // or retrying as plain text after a possibly accepted delivery.
-    const content = format === 'markdown'
-      ? { schema: '2.0', body: { elements: [{ tag: 'markdown', content: text }] } }
-      : { text };
+
+    // When replying to an existing message, verify chat ownership if it's a group target
+    if (normalizedReplyTo && target?.kind === 'group') {
+      let getRes;
+      try {
+        getRes = await this.#client.im.v1.message.get({
+          path: { message_id: normalizedReplyTo },
+        });
+      } catch (err) {
+        signal?.throwIfAborted();
+        const error = new Error('Failed to verify reply target; check message visibility and read permissions', { cause: err });
+        error.code = messageErrorCode(err);
+        throw error;
+      }
+      if (getRes?.code && getRes.code !== 0) {
+        const error = new Error(`Target reply message rejected: ${getRes.msg || getRes.code}`);
+        error.code = messageErrorCode(getRes);
+        throw error;
+      }
+      const item = getRes?.data?.items?.find?.((c) => nonEmptyString(c?.message_id) === normalizedReplyTo);
+      const itemChatId = nonEmptyString(item?.chat_id);
+      if (!item || item.deleted === true || itemChatId !== receiveId) {
+        const error = new Error(`Target message does not belong to chat ${receiveId}`);
+        error.code = 'target-rejected';
+        throw error;
+      }
+    }
+
+    const msgType = format === 'markdown' ? 'interactive' : 'text';
+    const contentString = format === 'markdown'
+      ? JSON.stringify({ schema: '2.0', body: { elements: [{ tag: 'markdown', content: text }] } })
+      : JSON.stringify({ text });
+
+    if (normalizedReplyTo) {
+      signal?.throwIfAborted();
+      const response = await this.#client.im.v1.message.reply({
+        path: { message_id: normalizedReplyTo },
+        data: {
+          msg_type: msgType,
+          content: contentString,
+          ...(replyInThread ? { reply_in_thread: true } : {}),
+        },
+      });
+      if (response?.code && response.code !== 0) {
+        const error = new Error(`Feishu reply delivery failed: ${response.msg || response.code}`);
+        error.code = messageErrorCode(response);
+        throw error;
+      }
+      const messageId = nonEmptyString(response?.data?.message_id);
+      const threadId = nonEmptyString(response?.data?.thread_id);
+      const rootId = nonEmptyString(response?.data?.root_id);
+      if (!messageId || (replyInThread === true && !threadId)) {
+        const error = new Error('Reply may have been sent, but Feishu returned an incomplete receipt; do not blindly resend');
+        error.code = 'delivery-failed';
+        throw error;
+      }
+      return {
+        sent: true,
+        ...(messageId ? { messageId } : {}),
+        ...(threadId ? { threadId } : {}),
+        ...(rootId ? { rootId } : {}),
+      };
+    }
+
     const response = await this.#client.im.v1.message.create({
       params: { receive_id_type: receiveIdType },
       data: {
         receive_id: receiveId,
-        msg_type: format === 'markdown' ? 'interactive' : 'text',
-        content: JSON.stringify(content),
+        msg_type: msgType,
+        content: contentString,
       },
     });
     if (response?.code && response.code !== 0) {
       const error = new Error(`Feishu proactive delivery failed: ${response.msg || response.code}`);
-      error.code = 'target-rejected';
+      error.code = messageErrorCode(response);
       throw error;
     }
     return { sent: true };
   }
+
+  async listMessages(target, {
+    threadId,
+    startTime,
+    endTime,
+    pageSize = 20,
+    pageToken,
+    signal,
+  } = {}) {
+    if (!this.#status.ready || !this.#client) {
+      const error = new Error('飞书机器人尚未连接');
+      error.code = 'bot-not-connected';
+      throw error;
+    }
+    if (target?.kind !== 'group') {
+      const error = new TypeError('listMessages only supports group targets');
+      error.code = 'bad-request';
+      throw error;
+    }
+    const chatId = nonEmptyString(target?.route?.chatId);
+    if (!chatId) {
+      const error = new TypeError('Group target must have chatId');
+      error.code = 'bad-request';
+      throw error;
+    }
+    const normalizedThreadId = nonEmptyString(threadId);
+    if ((threadId !== undefined && !normalizedThreadId)
+      || (pageToken !== undefined && !nonEmptyString(pageToken))) {
+      const error = new TypeError('threadId and pageToken must be non-empty strings');
+      error.code = 'bad-request';
+      throw error;
+    }
+    if (normalizedThreadId && (startTime !== undefined || endTime !== undefined)) {
+      const error = new TypeError('Feishu thread message history does not support startTime or endTime');
+      error.code = 'bad-request';
+      throw error;
+    }
+
+    let startTimeSec = null;
+    let endTimeSec = null;
+    if (!normalizedThreadId) {
+      startTimeSec = normalizeTimeFilterToSeconds(startTime, 'startTime');
+      endTimeSec = normalizeTimeFilterToSeconds(endTime, 'endTime');
+    }
+    if (startTimeSec !== null && endTimeSec !== null && startTimeSec > endTimeSec) {
+      const error = new TypeError('startTime must not exceed endTime');
+      error.code = 'bad-request';
+      throw error;
+    }
+
+    const containerIdType = normalizedThreadId ? 'thread' : 'chat';
+    const containerId = normalizedThreadId ?? chatId;
+
+    let limit = 20;
+    if (pageSize !== undefined) {
+      const parsedSize = pageSize;
+      if (!Number.isInteger(parsedSize) || parsedSize < 1 || parsedSize > 50) {
+        const error = new TypeError('pageSize must be an integer between 1 and 50');
+        error.code = 'bad-request';
+        throw error;
+      }
+      limit = parsedSize;
+    }
+
+    signal?.throwIfAborted();
+
+    const params = {
+      container_id_type: containerIdType,
+      container_id: containerId,
+      page_size: limit,
+      sort_type: 'ByCreateTimeDesc',
+      card_msg_content_type: 'user_card_content',
+      ...(pageToken ? { page_token: pageToken } : {}),
+      ...(startTimeSec !== null ? { start_time: String(startTimeSec) } : {}),
+      ...(endTimeSec !== null ? { end_time: String(endTimeSec) } : {}),
+    };
+
+    let response;
+    try {
+      response = await this.#client.im.v1.message.list({ params });
+    } catch (err) {
+      signal?.throwIfAborted();
+      const error = new Error('Failed to read Feishu history; check group membership and im:message.group_msg/read permissions', { cause: err });
+      error.code = messageErrorCode(err);
+      throw error;
+    }
+
+    if (response?.code && response.code !== 0) {
+      const error = new Error(`Feishu listMessages failed: ${response.msg || response.code}`);
+      error.code = messageErrorCode(response);
+      throw error;
+    }
+
+    signal?.throwIfAborted();
+    if (!Array.isArray(response?.data?.items)) {
+      const error = new Error('Feishu returned an invalid history response');
+      error.code = 'target-rejected';
+      throw error;
+    }
+    const rawItems = response.data.items;
+    for (const item of rawItems) {
+      if (!nonEmptyString(item?.message_id) || nonEmptyString(item?.chat_id) !== chatId
+        || (normalizedThreadId && nonEmptyString(item?.thread_id) !== normalizedThreadId)) {
+        const error = new Error('History message does not belong to the requested group or thread');
+        error.code = 'target-rejected';
+        throw error;
+      }
+    }
+
+    const items = rawItems.map((item) => normalizeFeishuHistoryMessage(item));
+    const hasMore = Boolean(response?.data?.has_more);
+    const nextPageToken = nonEmptyString(response?.data?.page_token);
+    if (hasMore && !nextPageToken) {
+      const error = new Error('Feishu history response is missing its next-page cursor');
+      error.code = 'target-rejected';
+      throw error;
+    }
+
+    return {
+      items,
+      hasMore,
+      ...(nextPageToken ? { pageToken: nextPageToken } : {}),
+    };
+  }
+
 
   async #registerSlashCommands(httpInstance, isCurrentStart, signal) {
     this.#status.slashCommandRegistration = 'registering';

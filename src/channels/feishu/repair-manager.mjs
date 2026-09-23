@@ -1,5 +1,7 @@
 import { RegistrationManager } from './registration-manager.mjs';
 import { SLASH_COMMAND_TENANT_SCOPES } from './slash-command-registry.mjs';
+import { FEISHU_GROUP_MESSAGE_SCOPE } from './group-message-permission-manager.mjs';
+export { FEISHU_GROUP_MESSAGE_SCOPE };
 
 export const CARD_ACTION_CALLBACK = 'card.action.trigger';
 export const FEISHU_MESSAGE_READ_SCOPE = 'im:message:readonly';
@@ -75,10 +77,10 @@ export function assertCallbackRepairUrl(value, expectedAppId, domain = 'feishu')
  * One targeted update attempt for an existing Feishu app.  It intentionally
  * shares RegistrationManager's polling/state implementation while fixing the
  * update manifest in one place so callers can add only the card callback, the
- * message-read scope needed to download user-sent media, the resource scope
- * needed to upload bot-sent images/files, the group bot-mention scope, and the
- * Slash Command scopes for the native command panel, without adding unrelated scopes, events,
- * presets, or createOnly.
+ * message-read scopes needed to download user-sent media and browse group history,
+ * the resource scope needed to upload bot-sent images/files, the group bot-mention
+ * scope, and the Slash Command scopes for the native command panel, without adding
+ * unrelated scopes, events, presets, or createOnly.
  */
 export class CallbackRepairManager {
   #manager;
@@ -116,6 +118,7 @@ export class CallbackRepairManager {
         scopes: {
           tenant: [
             FEISHU_MESSAGE_READ_SCOPE,
+            FEISHU_GROUP_MESSAGE_SCOPE,
             FEISHU_RESOURCE_SCOPE,
             'im:message.group_at_msg.include_bot:readonly',
             ...SLASH_COMMAND_TENANT_SCOPES,

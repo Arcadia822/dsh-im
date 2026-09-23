@@ -295,3 +295,110 @@ test('DeliveryService marks explicit remote Harness channels unavailable for Ses
   });
   assert.deepEqual(calls, [['bot_one', 'direct', false]]);
 });
+
+test('DeliveryService listMessages delegates to Feishu group target and propagates options and cancellation', async () => {
+  const service = createDeliveryService();
+  const adapter = memoryAdapter({ channel: 'feishu', botId: 'feishu_bot' });
+  const groupTarget = {
+    targetId: 'dev-chat',
+    name: 'Dev Chat',
+    kind: 'group',
+    route: { chatId: 'oc_123' },
+  };
+  const userTarget = {
+    targetId: 'dev-user',
+    name: 'Dev User',
+    kind: 'user',
+    route: { openId: 'ou_456' },
+  };
+  adapter.listTargets = () => [groupTarget, userTarget];
+  const listCalls = [];
+  adapter.listMessages = async (botId, target, options) => {
+    listCalls.push([botId, target, options]);
+    return { items: [{ messageId: 'om_1', text: 'hi' }], hasMore: false };
+  };
+  service.registerAdapter(adapter);
+
+  const result = await service.listMessages('feishu_bot', 'dev-chat', { pageSize: 10 });
+  assert.deepEqual(result, { items: [{ messageId: 'om_1', text: 'hi' }], hasMore: false });
+  assert.deepEqual(listCalls[0], [
+    'feishu_bot',
+    groupTarget,
+    { pageSize: 10 },
+  ]);
+
+  // Rejects user targets
+  await assert.rejects(
+    service.listMessages('feishu_bot', 'dev-user'),
+    { code: 'bad-request' },
+  );
+
+  // Rejects unknown target
+  await assert.rejects(
+    service.listMessages('feishu_bot', 'unknown-chat'),
+    { code: 'unknown-target' },
+  );
+
+  // Aborted signal
+  const abort = new AbortController();
+  abort.abort();
+  await assert.rejects(
+    service.listMessages('feishu_bot', 'dev-chat', { signal: abort.signal }),
+    { code: 'cancelled' },
+  );
+});
+
+test('DeliveryService listMessages and reply options reject non-Feishu channels', async () => {
+  const service = createDeliveryService();
+  const adapter = memoryAdapter({ channel: 'telegram', botId: 'tg_bot' });
+  adapter.listTargets = () => [{
+    targetId: 'tg-group',
+    kind: 'chat',
+    route: { chatId: '123' },
+  }];
+  service.registerAdapter(adapter);
+
+  await assert.rejects(
+    service.listMessages('tg_bot', 'tg-group'),
+    { code: 'bad-request' },
+  );
+  await assert.rejects(
+    service.send('tg_bot', 'tg-group', 'hello', { replyToMessageId: 'om_1' }),
+    { code: 'bad-request' },
+  );
+});
+
+test('DeliveryService send propagates Feishu reply options and receipts', async () => {
+  const service = createDeliveryService();
+  const adapter = memoryAdapter({ channel: 'feishu', botId: 'feishu_bot' });
+  const groupTarget = {
+    targetId: 'dev-chat',
+    name: 'Dev Chat',
+    kind: 'group',
+    route: { chatId: 'oc_123' },
+  };
+  adapter.listTargets = () => [groupTarget];
+  adapter.sendText = async (_botId, _target, _text, options) => {
+    assert.equal(options.replyToMessageId, 'om_target_123');
+    assert.equal(options.replyInThread, true);
+    return { sent: true, messageId: 'om_reply_456', threadId: 'omt_789', rootId: 'om_target_123' };
+  };
+  service.registerAdapter(adapter);
+
+  const receipt = await service.send('feishu_bot', 'dev-chat', 'reply text', {
+    replyToMessageId: 'om_target_123',
+    replyInThread: true,
+  });
+  assert.deepEqual(receipt, {
+    sent: true,
+    messageId: 'om_reply_456',
+    threadId: 'omt_789',
+    rootId: 'om_target_123',
+  });
+
+  // replyInThread requires replyToMessageId
+  await assert.rejects(
+    service.send('feishu_bot', 'dev-chat', 'reply text', { replyInThread: true }),
+    { code: 'bad-request' },
+  );
+});
