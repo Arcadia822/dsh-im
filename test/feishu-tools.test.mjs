@@ -9,6 +9,13 @@ function installedTools(service) {
   return new Map(definitions.map((tool) => [tool.name, tool]));
 }
 
+test('Feishu send tool describes the one-shot auto/card formats', () => {
+  const send = installedTools({}).get('dsh_im_feishu_send');
+  assert.deepEqual(send.parameters.properties.format.enum, ['auto', 'plain', 'markdown', 'card']);
+  assert.match(send.description, /no Agent turn or stream/);
+  assert.match(send.parameters.properties.format.description, /valid card JSON/);
+});
+
 test('Feishu tools support explicit botId and targetId', async () => {
   const calls = [];
   const tools = installedTools({

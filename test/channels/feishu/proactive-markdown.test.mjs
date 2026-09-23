@@ -11,17 +11,27 @@ const targets = [
   { targetId: 'group', kind: 'group', route: { chatId: 'oc_fixture_group' } },
 ];
 
-async function fixture(t, domain = 'feishu') {
+async function fixture(t, domain = 'feishu', config = {}) {
   const sends = [];
+  const replies = [];
   const clientOptions = [];
   let respond = () => ({ code: 0, data: { message_id: 'fixture-message' } });
   class Client {
     constructor(options) {
       clientOptions.push(options);
-      this.im = { v1: { message: { create: async (payload) => {
-        sends.push(payload);
-        return respond();
-      } } } };
+      this.im = { v1: { message: {
+        create: async (payload) => {
+          sends.push(payload);
+          return respond();
+        },
+        get: async ({ path }) => ({ code: 0, data: { items: [{
+          message_id: path.message_id, chat_id: targets[1].route.chatId,
+        }] } }),
+        reply: async (payload) => {
+          replies.push(payload);
+          return respond();
+        },
+      } } };
     }
   }
   class EventDispatcher { register() { return this; } }
@@ -35,7 +45,7 @@ async function fixture(t, domain = 'feishu') {
     lark: { Client, EventDispatcher, WSClient,
       Domain: { Feishu: 'fixture-feishu', Lark: 'fixture-lark' }, LoggerLevel: { info: 'info' } },
     appId: 'fixture-app', appSecret: 'fixture-secret', ownerOpenIds: ['ou_fixture_owner'],
-    domain, slashCommands: false,
+    domain, slashCommands: false, ...config,
     harness: { async ensureRunning() {} }, state: { hasSeen: () => false },
   });
   t.after(() => runtime.stop());
@@ -52,7 +62,7 @@ async function fixture(t, domain = 'feishu') {
       runtime.sendProactiveText(target, value, options)
     ) },
   }));
-  return { service, runtime, sends, clientOptions, respondWith: (fn) => { respond = fn; } };
+  return { service, runtime, sends, replies, clientOptions, respondWith: (fn) => { respond = fn; } };
 }
 
 for (const domain of ['feishu', 'lark']) {
@@ -81,6 +91,90 @@ for (const domain of ['feishu', 'lark']) {
     assert.equal(sends.length, 12, 'Exactly one platform call per request, no stream or retry');
   });
 }
+
+test('auto follows streaming-card configuration while overrides remain one-shot', async (t) => {
+  const { service, runtime, sends } = await fixture(t, 'feishu', {
+    stepPush: true, stepPushMode: 'streaming_card',
+  });
+  const markdown = { schema: '2.0', body: { elements: [{ tag: 'markdown', content: text }] } };
+  const check = async (format, type, content) => {
+    await service.send('fixture-bot', 'dm', text, format === undefined ? {} : { format });
+    const sent = sends.at(-1);
+    assert.equal(sent.data.msg_type, type);
+    assert.deepEqual(JSON.parse(sent.data.content), content);
+  };
+  await check(undefined, 'interactive', markdown);
+  await check('auto', 'interactive', markdown);
+  await check('plain', 'text', { text });
+  await check('markdown', 'interactive', markdown);
+  await check('card', 'interactive', markdown);
+  runtime.setStepPushMode('post');
+  await check(undefined, 'text', { text });
+  runtime.setStepPushMode('streaming_card');
+  runtime.setStepPush(false);
+  await check('auto', 'text', { text });
+  runtime.setStepPushMode('live_cot');
+  runtime.setStepPush(true);
+  await check('auto', 'text', { text });
+  assert.equal(sends.length, 8, 'One platform create for each request, with no streamed updates');
+});
+
+test('auto/card preserve real card JSON verbatim, not unrelated JSON', async (t) => {
+  const { service, sends } = await fixture(t);
+  const cards = [
+    ' \n{"schema":"2.0","body":{"elements":[{"tag":"markdown","content":"hello"}]}} ',
+    '{"elements":[{"tag":"div","text":{"tag":"plain_text","content":"hello"}}]}',
+  ];
+  for (const card of cards) {
+    for (const format of [undefined, 'auto', 'card']) {
+      await service.send('fixture-bot', 'dm', card, { format });
+      assert.equal(sends.at(-1).data.msg_type, 'interactive');
+      assert.equal(sends.at(-1).data.content, card);
+    }
+    await service.send('fixture-bot', 'dm', card, { format: 'plain' });
+    assert.deepEqual(JSON.parse(sends.at(-1).data.content), { text: card });
+    await service.send('fixture-bot', 'dm', card, { format: 'markdown' });
+    assert.deepEqual(JSON.parse(sends.at(-1).data.content), {
+      schema: '2.0', body: { elements: [{ tag: 'markdown', content: card }] },
+    });
+  }
+  for (const ordinaryJson of [
+    '{"foo":"bar"}', '{"schema":"2.0","body":{"elements":{}}}',
+    '{"schema":"2.0","elements":"not an array"}', '[{"elements":[]}]',
+  ]) {
+    await service.send('fixture-bot', 'dm', ordinaryJson);
+    assert.equal(sends.at(-1).data.msg_type, 'text');
+    assert.deepEqual(JSON.parse(sends.at(-1).data.content), { text: ordinaryJson });
+    await service.send('fixture-bot', 'dm', ordinaryJson, { format: 'card' });
+    assert.deepEqual(JSON.parse(sends.at(-1).data.content), {
+      schema: '2.0', body: { elements: [{ tag: 'markdown', content: ordinaryJson }] },
+    });
+  }
+  assert.equal(sends.length, 18);
+});
+
+test('card and auto replies retain the reply target and thread receipt', async (t) => {
+  const { service, sends, replies, respondWith } = await fixture(t, 'feishu', {
+    stepPush: true, stepPushMode: 'streaming_card',
+  });
+  respondWith(() => ({ code: 0, data: {
+    message_id: 'om_reply', thread_id: 'omt_thread', root_id: 'om_root',
+  } }));
+  for (const format of [undefined, 'plain', 'card']) {
+    const receipt = await service.send('fixture-bot', 'group', text, {
+      format, replyToMessageId: ' om_root ', replyInThread: true,
+    });
+    assert.deepEqual(receipt, {
+      sent: true, messageId: 'om_reply', threadId: 'omt_thread', rootId: 'om_root',
+    });
+    const reply = replies.at(-1);
+    assert.equal(reply.path.message_id, 'om_root');
+    assert.equal(reply.data.reply_in_thread, true);
+    assert.equal(reply.data.msg_type, format === 'plain' ? 'text' : 'interactive');
+  }
+  assert.equal(sends.length, 0);
+  assert.equal(replies.length, 3);
+});
 
 test('proactive format validation and cancellation never send a message', async (t) => {
   const { service, runtime, sends } = await fixture(t);

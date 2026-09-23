@@ -87,7 +87,7 @@ export function installFeishuTools(ctx, service) {
 
   ctx.tools.register({
     name: 'dsh_im_feishu_send',
-    description: 'Deliver text, Markdown, or an interactive card to a Feishu target or the current chat session. Inside a bound Feishu chat session, botId and targetId are optional. Supply replyToMessageId and replyInThread=true to reply inside a thread.',
+    description: 'Send one Feishu message to a target or the current chat session (no Agent turn or stream). Omitted/auto format follows the bot card setting and passes valid card JSON through; plain forces text, markdown renders as a card, and card wraps text or passes valid card JSON unchanged. Inside a bound Feishu chat session, botId and targetId are optional. Supply replyToMessageId and replyInThread=true to reply inside a thread.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -95,7 +95,7 @@ export function installFeishuTools(ctx, service) {
         botId: { type: 'string', description: 'Optional inside a bound Feishu chat; otherwise configured Feishu Bot ID.' },
         targetId: { type: 'string', description: 'Optional inside a bound Feishu chat; otherwise saved delivery target ID.' },
         text: { type: 'string', minLength: 1, description: 'Message or reply content.' },
-        format: { type: 'string', enum: ['plain', 'markdown'], description: 'Message format: plain text (default) or markdown.' },
+        format: { type: 'string', enum: ['auto', 'plain', 'markdown', 'card'], description: 'Omit or use auto for bot-configured card/text delivery and valid card JSON passthrough; plain forces text; markdown wraps text in a Markdown card; card wraps text or sends valid card JSON unchanged.' },
         replyToMessageId: { type: 'string', description: 'Existing message ID in the group to reply to.' },
         replyInThread: { type: 'boolean', description: 'Set true to reply in a thread. Requires replyToMessageId.' },
       },

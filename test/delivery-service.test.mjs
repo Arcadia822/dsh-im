@@ -368,6 +368,23 @@ test('DeliveryService listMessages and reply options reject non-Feishu channels'
   );
 });
 
+test('DeliveryService keeps non-Feishu formats while rejecting explicit auto/card', async () => {
+  const service = createDeliveryService();
+  const adapter = memoryAdapter({ channel: 'telegram' });
+  adapter.listTargets = () => [{ targetId: 'daily', kind: 'chat', route: { chatId: '123' } }];
+  service.registerAdapter(adapter);
+  await service.send('bot_one', 'daily', 'hello');
+  await service.send('bot_one', 'daily', '*hello*', { format: 'markdown' });
+  await service.send('bot_one', 'daily', 'hello', { format: 'plain' });
+  assert.deepEqual(adapter.sends.map(([, , , options]) => options), [
+    { signal: undefined }, { signal: undefined, format: 'markdown' }, { signal: undefined },
+  ]);
+  for (const format of ['auto', 'card']) {
+    await assert.rejects(service.send('bot_one', 'daily', 'hello', { format }), { code: 'bad-request' });
+  }
+  assert.equal(adapter.sends.length, 3);
+});
+
 test('DeliveryService send propagates Feishu reply options and receipts', async () => {
   const service = createDeliveryService();
   const adapter = memoryAdapter({ channel: 'feishu', botId: 'feishu_bot' });

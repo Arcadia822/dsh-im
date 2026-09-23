@@ -136,7 +136,7 @@ A successful request returns:
 { "sent": true }
 ```
 
-The body accepts the required `botId`, `targetId`, and `text` fields, plus optional `format` (`plain` or `markdown`, default `plain`), with a maximum total JSON size of 1 MiB. Do not add a native platform route, `sessionId`, `chatRef`, temporary webhook, or `idempotencyKey`.
+The body accepts required `botId`, `targetId`, and `text`, plus optional `format` (Feishu supports `auto`, `plain`, `markdown`, and `card`; omission means `auto`; other channels retain `plain`/`markdown` and reject explicit `auto`/`card`), with a maximum total JSON size of 1 MiB. Do not add a native platform route, `sessionId`, `chatRef`, temporary webhook, or `idempotencyKey`.
 
 The fixed endpoint is `POST /api/dsh-im/delivery/messages`. It reuses the current DSH Host WebServer and does not open another port. Port `3080` is the default for the Web profile; use the address printed by the running Host when it differs.
 
@@ -175,7 +175,7 @@ export async function apply(ctx) {
 In a real plugin, call `ctx.dshIm.send()` from your existing scheduled job, build callback, or business-event handler. Its optional fourth argument supports an abort signal and a text format:
 
 ```js
-await ctx.dshIm.send(botId, targetId, text, { signal }); // Keep existing default behavior
+await ctx.dshIm.send(botId, targetId, text, { signal }); // Feishu follows bot card settings; other channels retain their text default
 await ctx.dshIm.send(botId, targetId, '# Daily report\n\n**Checks complete**', {
   signal,
   format: 'markdown',
@@ -184,9 +184,9 @@ await ctx.dshIm.send(botId, targetId, '# Daily report\n\n**Checks complete**', {
 
 Same-Host Feishu callers can use `ctx.dshIm.listMessages(botId, targetId, options)` and pass `replyToMessageId` plus `replyInThread: true` in the fourth `send` argument. Agents can call `dsh_im_feishu_list_messages` and `dsh_im_feishu_send`; both require configured Feishu Bot and saved target IDs.
 
-`format` accepts only `plain` and `markdown`, defaulting to `plain`. Markdown formatting is currently implemented for Feishu/Lark: both direct and group destinations receive a native Markdown card without starting a Session or a stream. Other channels retain their existing delivery behavior; Markdown rendering is not guaranteed there. HTTP and `message.send` RPC accept the same optional `format` field in their payloads.
+For Feishu/Lark, omitted or `auto` format sends ordinary content as an interactive Markdown card only when step push is enabled and its mode is `streaming_card`; otherwise it sends noncard text. A valid Feishu card JSON string passes through verbatim as an interactive card even for a noncard bot. Recognized shapes are `{"schema":"2.0","body":{"elements":[...]}}` or a legacy card with an `elements` array; arbitrary JSON remains ordinary content. `plain` forces text, `markdown` always wraps content in an interactive Markdown card, and `card` passes through valid card JSON or wraps ordinary text/Markdown in an interactive Markdown card. Other channels retain `plain`/`markdown` only, without guaranteed Markdown rendering. HTTP and `message.send` RPC accept the same optional `format` field.
 
-The original Markdown, including whitespace, is preserved without silent truncation or automatic splitting; platform message-size and Markdown-syntax limits still apply. Rejection, timeout, and cancellation use the existing error handling, with no automatic plain-text resend that could duplicate delivery. Older dsh-im Host APIs may ignore this option; both the consumer and dsh-im must load the updated code.
+Every format sends one message without starting an Agent Session or streaming updates. Original Markdown, including whitespace, is preserved without silent truncation or automatic splitting; platform size and syntax limits still apply. Rejection, timeout, and cancellation use existing error handling without a fallback resend that could duplicate delivery. Older dsh-im Host APIs may ignore this option; both the caller and dsh-im must load code supporting it.
 
 A same-Host plugin may also list the saved targets for one bot:
 
@@ -308,7 +308,7 @@ The HTTP protocol layer may also return `method-not-allowed` (405), `unsupported
 
 ## Delivery semantics and limits
 
-- Proactive delivery currently accepts nonempty text only. This API does not send images, files, cards, or rich content.
+- Proactive delivery accepts nonempty text; Feishu also accepts a valid card JSON string in `auto` or `card` format. It does not send images or files.
 - The maximum HTTP JSON request body is 1 MiB.
 - `{ sent: true }` means the platform accepted the send request or its SDK returned success. It does not guarantee final delivery or a read receipt.
 - DSH-IM stores no proactive-delivery history, generates no `deliveryHandle` or `idempotencyKey`, and performs no automatic retry.

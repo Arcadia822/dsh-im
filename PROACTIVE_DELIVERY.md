@@ -136,7 +136,7 @@ curl --request POST \
 { "sent": true }
 ```
 
-请求体接受必填的 `botId`、`targetId`、`text` 和可选的 `format`（`plain` 或 `markdown`，默认 `plain`），JSON 总大小不能超过 1 MiB。不要附加平台原生路由、`sessionId`、`chatRef`、临时 Webhook 或 `idempotencyKey`。
+请求体接受必填的 `botId`、`targetId`、`text` 和可选的 `format`（飞书支持 `auto`、`plain`、`markdown`、`card`，省略等同 `auto`；其他渠道保留 `plain`／`markdown`，不支持显式 `auto`／`card`），JSON 总大小不能超过 1 MiB。不要附加平台原生路由、`sessionId`、`chatRef`、临时 Webhook 或 `idempotencyKey`。
 
 接口路径固定为 `POST /api/dsh-im/delivery/messages`，复用当前 DSH Host 的 WebServer，不会另开端口。示例中的 `3080` 是 Web profile 的默认端口；实际地址以 Host 启动时显示的地址为准。
 
@@ -194,7 +194,7 @@ export async function apply(ctx) {
 实际使用时，把 `ctx.dshIm.send()` 放进你的定时任务、构建回调或业务事件处理函数中。可选的第四个参数支持取消信号和文本格式：
 
 ```js
-await ctx.dshIm.send(botId, targetId, text, { signal }); // 保持原有默认发送行为
+await ctx.dshIm.send(botId, targetId, text, { signal }); // 飞书按机器人卡片设置选择；其他渠道维持纯文本默认行为
 await ctx.dshIm.send(botId, targetId, '# 每日报告\n\n**检查完成**', {
   signal,
   format: 'markdown',
@@ -203,9 +203,9 @@ await ctx.dshIm.send(botId, targetId, '# 每日报告\n\n**检查完成**', {
 
 飞书同 Host 调用还可使用 `ctx.dshIm.listMessages(botId, targetId, options)` 读取群／话题历史，并在 `send` 的第四个参数传 `replyToMessageId` 与 `replyInThread: true`。Agent 可直接调用 `dsh_im_feishu_list_messages` 和 `dsh_im_feishu_send`；两者只接受已配置的飞书 Bot 与保存目标 ID。
 
-`format` 只接受 `plain` 和 `markdown`，省略时为 `plain`。当前 Markdown 格式适配用于飞书/Lark：私聊和群聊均通过原生 Markdown 卡片发送，不启动会话或流式输出；其他渠道保留原有发送行为，不保证 Markdown 渲染。HTTP 和 `message.send` RPC 可在请求体中添加同名 `format` 字段。
+飞书/Lark 的 `format` 省略或设为 `auto` 时，只有机器人启用了步骤推送且步骤推送模式为 `streaming_card`，才将普通内容作为交互式 Markdown 卡片发送；其他模式发送普通文本。但符合飞书卡片结构的 JSON 字符串始终原样作为交互式卡片发送，包括非卡片机器人模式。可识别的结构为 `{"schema":"2.0","body":{"elements":[...]}}` 或含 `elements` 数组的旧版卡片；普通 JSON 不会被误判。`plain` 强制发送文本，`markdown` 始终将原文包装为交互式 Markdown 卡片，`card` 则原样发送有效卡片 JSON，否则将文本／Markdown 包装为交互式 Markdown 卡片。其他渠道只接受原有的 `plain`／`markdown`，且不保证 Markdown 渲染。HTTP 和 `message.send` RPC 使用同名 `format` 字段。
 
-Markdown 原文（含换行）完整传递，不进行静默截断或自动分段；消息仍受平台大小和 Markdown 语法限制。平台拒绝、超时或取消时沿用已有错误处理，不自动回退成纯文本重发，以免重复投递。旧版本 dsh-im 的 Host API 可能忽略这个新选项；调用方与 dsh-im 都需要加载支持该选项的代码。
+所有格式均为一次性投递：不启动 Agent 会话或流式更新。Markdown 原文（含换行）完整传递，不进行静默截断或自动分段；消息仍受平台大小和 Markdown 语法限制。平台拒绝、超时或取消时沿用已有错误处理，不自动回退重发，以免重复投递。旧版本 dsh-im 的 Host API 可能忽略此选项；调用方与 dsh-im 都需要加载支持该选项的代码。
 
 同 Host 插件也可以列出某个机器人的已保存目标：
 
@@ -327,7 +327,7 @@ HTTP 协议层还可能返回 `method-not-allowed`（405）、`unsupported-media
 
 ## 投递语义与限制
 
-- 当前主动投递只发送非空文字，不支持在该接口中发送图片、文件、卡片或富文本。
+- 主动投递接收非空文字；飞书 `auto`／`card` 也可接收有效的卡片 JSON 字符串，不支持图片或文件。
 - HTTP JSON 请求体上限为 1 MiB。
 - `{ sent: true }` 表示平台发送接口接受请求或 SDK 成功返回，不承诺最终送达或已读。
 - DSH-IM 不保存主动投递历史，不生成 `deliveryHandle` 或 `idempotencyKey`，也不自动重试。

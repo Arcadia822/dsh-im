@@ -331,7 +331,7 @@ export class DeliveryService {
   }
 
 
-  async send(botId, targetIdOrDraft, text, { signal, format = 'plain', replyToMessageId, replyInThread } = {}) {
+  async send(botId, targetIdOrDraft, text, { signal, format, replyToMessageId, replyInThread } = {}) {
     const id = botIdOf(botId);
     const targetKey = typeof targetIdOrDraft === 'string'
       ? targetIdOf(targetIdOrDraft)
@@ -340,8 +340,8 @@ export class DeliveryService {
     if (typeof text !== 'string' || !text.trim()) {
       throw deliveryError('bad-request', 'Message text is required');
     }
-    if (format !== 'plain' && format !== 'markdown') {
-      throw deliveryError('bad-request', 'Message format must be plain or markdown');
+    if (format !== undefined && !['plain', 'markdown', 'auto', 'card'].includes(format)) {
+      throw deliveryError('bad-request', 'Message format must be plain, markdown, auto, or card');
     }
     const hasReplyFields = replyToMessageId !== undefined || replyInThread !== undefined;
     if (hasReplyFields) {
@@ -361,6 +361,9 @@ export class DeliveryService {
     }
     cancellation(signal);
     const adapter = await this.#adapterFor(id);
+    if (adapter.channel !== 'feishu' && (format === 'auto' || format === 'card')) {
+      throw deliveryError('bad-request', 'Auto and card formats are only supported for Feishu');
+    }
     if (hasReplyFields && adapter.channel !== 'feishu') {
       throw deliveryError('bad-request', 'Reply options are only supported for Feishu');
     }
@@ -380,7 +383,8 @@ export class DeliveryService {
       cancellation(signal);
       const sendOptions = {
         signal,
-        ...(format === 'markdown' ? { format } : {}),
+        ...(adapter.channel === 'feishu' ? { format: format ?? 'auto' }
+          : format === 'markdown' ? { format } : {}),
         ...(replyToMessageId !== undefined ? { replyToMessageId: replyToMessageId.trim() } : {}),
         ...(replyInThread !== undefined ? { replyInThread } : {}),
       };

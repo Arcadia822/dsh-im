@@ -30,6 +30,19 @@ function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+function isFeishuCard(text) {
+  if (!text.trimStart().startsWith('{')) return false;
+  try {
+    const card = JSON.parse(text);
+    return card !== null && typeof card === 'object' && !Array.isArray(card)
+      && (card.schema === '2.0'
+        ? Array.isArray(card.body?.elements)
+        : Array.isArray(card.elements));
+  } catch {
+    return false;
+  }
+}
+
 function messageErrorCode(value) {
   const code = Number(value?.response?.data?.code ?? value?.data?.code ?? value?.code);
   return code === 99991672 || code === 230027 ? 'permission-denied' : 'target-rejected';
@@ -655,7 +668,7 @@ export class FeishuRuntime {
 
   async sendProactiveText(target, text, {
     signal,
-    format = 'plain',
+    format = 'auto',
     replyToMessageId,
     replyInThread,
   } = {}) {
@@ -676,8 +689,8 @@ export class FeishuRuntime {
       error.code = 'invalid-target';
       throw error;
     }
-    if (format !== 'plain' && format !== 'markdown') {
-      const error = new TypeError('Message format must be plain or markdown');
+    if (!['plain', 'markdown', 'auto', 'card'].includes(format)) {
+      const error = new TypeError('Message format must be plain, markdown, auto, or card');
       error.code = 'bad-request';
       throw error;
     }
@@ -726,8 +739,11 @@ export class FeishuRuntime {
       }
     }
 
-    const msgType = format === 'markdown' ? 'interactive' : 'text';
-    const contentString = format === 'markdown'
+    const rawCard = (format === 'auto' || format === 'card') && isFeishuCard(text);
+    const useCard = rawCard || format === 'markdown' || format === 'card'
+      || (format === 'auto' && this.#stepPush && this.#stepPushMode === 'streaming_card');
+    const msgType = useCard ? 'interactive' : 'text';
+    const contentString = rawCard ? text : useCard
       ? JSON.stringify({ schema: '2.0', body: { elements: [{ tag: 'markdown', content: text }] } })
       : JSON.stringify({ text });
 
