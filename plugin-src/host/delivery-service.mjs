@@ -291,19 +291,27 @@ export class DeliveryService {
     }
   }
 
-  async listMessages(botId, targetId, options = {}) {
+  async listMessages(botId, targetIdOrDraft, options = {}) {
     const id = botIdOf(botId);
-    const targetKey = targetIdOf(targetId);
+    const targetKey = typeof targetIdOrDraft === 'string'
+      ? targetIdOf(targetIdOrDraft)
+      : null;
+    const draft = targetKey === null ? draftTargetObject(targetIdOrDraft) : null;
     cancellation(options?.signal);
     const adapter = await this.#adapterFor(id);
     if (adapter.channel !== 'feishu') {
       throw deliveryError('bad-request', 'Message history is only supported for Feishu');
     }
     try {
-      const targets = await adapter.listTargets(id);
-      if (!Array.isArray(targets)) throw new TypeError('Adapter returned invalid targets');
-      const target = targets.find((candidate) => candidate?.targetId === targetKey);
-      if (!target) throw deliveryError('unknown-target', 'Unknown target');
+      let target;
+      if (draft) {
+        target = { targetId: DRAFT_TARGET_ID, ...draft };
+      } else {
+        const targets = await adapter.listTargets(id);
+        if (!Array.isArray(targets)) throw new TypeError('Adapter returned invalid targets');
+        target = targets.find((candidate) => candidate?.targetId === targetKey);
+        if (!target) throw deliveryError('unknown-target', 'Unknown target');
+      }
       if (target.kind !== 'group') {
         throw deliveryError('bad-request', 'Message history is only supported for group targets');
       }

@@ -105,7 +105,7 @@ function validSendPayload(payload) {
   if (Object.keys(payload).some((key) => !allowedKeys.includes(key))) return false;
   if (!validBotId(payload.botId) || !validTargetId(payload.targetId)) return false;
   if (typeof payload.text !== 'string' || !payload.text.trim()) return false;
-  if (payload.format !== undefined && !['plain', 'markdown'].includes(payload.format)) return false;
+  if (payload.format !== undefined && !['plain', 'markdown', 'auto', 'card'].includes(payload.format)) return false;
   if (payload.replyToMessageId !== undefined) {
     if (typeof payload.replyToMessageId !== 'string' || !payload.replyToMessageId.trim()) return false;
   }

@@ -845,7 +845,7 @@ export class FeishuHarnessBridge {
     const threadId = nonEmptyString(event?.message?.thread_id);
     if (threadId) {
       const root = this.#state?.topicRootFor?.(threadId) ?? null;
-      return root && chatId
+      return root?.chatId === chatId && nonEmptyString(root.rootMessageId)
         ? managedGroupKey(chatId, root.rootMessageId)
         : `group:${chatId}:thread:${threadId}`;
     }
@@ -973,11 +973,17 @@ export class FeishuHarnessBridge {
       this.#status.lastRejectedAt = new Date().toISOString();
       return Promise.resolve();
     }
-    // Check the resolved conversation's existing binding without creating a
-    // Session; an unrelated group binding cannot authorize a new topic.
-    const boundThreadContinuation = unaddressedMentionGroup
-      && Boolean(this.#state.sessionFor?.(key));
-    if (unaddressedMentionGroup && !boundThreadContinuation) {
+    // A topic the bot opened remains conversational even before its first
+    // Session exists (or after /new clears it). Manual topics need an existing
+    // per-topic binding, live turn/interaction, or menu instead. A thread_id
+    // alone—and any unrelated group's binding—never authorizes continuation.
+    const knownTopicContinuation = unaddressedMentionGroup
+      && (key.startsWith(`group:${nonEmptyString(event.message.chat_id)}:managed:`)
+        || Boolean(this.#state.sessionFor?.(key))
+        || this.#queues.has(key)
+        || this.#hasPendingInteraction(key)
+        || Boolean(this.#takeMenu(key)));
+    if (unaddressedMentionGroup && !knownTopicContinuation) {
       return Promise.resolve();
     }
     this.#rememberTopicReply(messageId, key);
@@ -1104,7 +1110,7 @@ export class FeishuHarnessBridge {
           : (isPresetCommand(commandText) ? runPresetCommand : null));
     // In all-message group mode, history must still be refused locally rather
     // than becoming a normal prompt when no mention is present.
-    if (commandRunner && (addressed || boundThreadContinuation || commandRunner === runHistoryCommand)) {
+    if (commandRunner && (addressed || knownTopicContinuation || commandRunner === runHistoryCommand)) {
       const processing = this.#processFastCommand(
         event,
         messageId,
@@ -1146,7 +1152,7 @@ export class FeishuHarnessBridge {
       actor: senderOpenId(event),
       messageId,
       text: extractText(event) ?? '',
-      addressed: addressed || boundThreadContinuation,
+      addressed: addressed || knownTopicContinuation,
       hasPendingQuestion: Boolean(pending),
       questionCompletion: pending?.submitting || pending?.claimedReplyMessageId
         ? pending.queue

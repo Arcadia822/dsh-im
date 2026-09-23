@@ -185,6 +185,16 @@ export class StateStore {
       : null;
   }
 
+  threadIdForTopic(chatId, rootMessageId) {
+    if (!chatId || !rootMessageId) return null;
+    for (const [threadId, root] of Object.entries(this.#state.topics)) {
+      if (root?.chatId === chatId && root?.rootMessageId === rootMessageId) {
+        return threadId;
+      }
+    }
+    return null;
+  }
+
   async setTopic(threadId, root) {
     const validRoot = root && typeof root === 'object'
       && typeof root.rootMessageId === 'string' && root.rootMessageId.length > 0

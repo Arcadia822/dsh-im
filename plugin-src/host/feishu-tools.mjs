@@ -17,37 +17,39 @@ export function installFeishuTools(ctx, service) {
 
   const resolveTarget = async (args, exec) => {
     let { botId, targetId } = args ?? {};
-    if (botId && targetId) {
-      await requireFeishu(botId);
-      return { botId, targetId, autoResolved: null };
-    }
-
     const sessionId = exec?.agent?.session?.header?.id;
-    if (sessionId && typeof service.conversationContextForSession === 'function') {
-      const autoContext = await service.conversationContextForSession(sessionId);
-      if (autoContext?.botId && autoContext?.chatId) {
-        botId = autoContext.botId;
-        const targets = (await service.listTargets(botId))?.targets ?? [];
-        const matched = targets.find((t) => t.kind === 'group' && t.route?.chatId === autoContext.chatId);
-        if (matched) {
-          targetId = matched.targetId;
-          return { botId, targetId, autoResolved: autoContext };
-        }
-        return {
-          botId,
-          targetId: { kind: 'group', route: { chatId: autoContext.chatId } },
-          autoResolved: autoContext,
-        };
-      }
-    }
+    const context = sessionId && typeof service.conversationContextForSession === 'function'
+      ? await service.conversationContextForSession(sessionId)
+      : null;
+    botId ??= context?.botId;
+    const currentGroup = context?.botId === botId && context?.chatId;
+    const targetOmitted = targetId === undefined;
 
-    if (!botId || !targetId) {
+    if (!botId || (targetOmitted && !currentGroup) || (!targetOmitted && !targetId)) {
       const error = new Error('botId and targetId are required when calling outside a bound Feishu conversation');
       error.code = 'bad-request';
       throw error;
     }
     await requireFeishu(botId);
-    return { botId, targetId, autoResolved: null };
+
+    let targets = [];
+    if (currentGroup && (targetOmitted || context.threadId)) {
+      targets = (await service.listTargets(botId))?.targets ?? [];
+    }
+    if (targetOmitted) {
+      const matched = targets.find((entry) => entry.kind === 'group'
+        && entry.route?.chatId === context.chatId);
+      targetId = matched?.targetId
+        ?? { kind: 'group', route: { chatId: context.chatId } };
+    }
+    const isCurrentGroup = Boolean(currentGroup && (
+      (typeof targetId === 'string' && targets.some((entry) =>
+        entry.targetId === targetId && entry.kind === 'group'
+        && entry.route?.chatId === context.chatId))
+      || (typeof targetId === 'object' && targetId?.kind === 'group'
+        && targetId.route?.chatId === context.chatId)
+    ));
+    return { botId, targetId, autoResolved: isCurrentGroup ? context : null };
   };
 
   ctx.tools.register({

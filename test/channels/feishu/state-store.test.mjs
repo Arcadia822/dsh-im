@@ -26,10 +26,16 @@ test('StateStore persists managed-topic roots (thread_id → root message)', asy
   await first.setTopic('omt_created', { rootMessageId: 'om_root', chatId: 'oc_group' });
   assert.deepEqual(first.topicRootFor('omt_created'), { rootMessageId: 'om_root', chatId: 'oc_group' });
   await first.setTopic('omt_second', { rootMessageId: 'om_root2', chatId: 'oc_group' });
+  await first.setTopic('omt_other_chat', { rootMessageId: 'om_root', chatId: 'oc_elsewhere' });
+  assert.equal(first.threadIdForTopic('oc_group', 'om_root'), 'omt_created');
+  assert.equal(first.threadIdForTopic('oc_elsewhere', 'om_root'), 'omt_other_chat');
+  assert.equal(first.threadIdForTopic('oc_group', 'om_missing'), null);
 
   const second = await new StateStore(path).load();
   assert.deepEqual(second.topicRootFor('omt_created'), { rootMessageId: 'om_root', chatId: 'oc_group' });
   assert.deepEqual(second.topicRootFor('omt_second'), { rootMessageId: 'om_root2', chatId: 'oc_group' });
+  assert.equal(second.threadIdForTopic('oc_group', 'om_root'), 'omt_created');
+  assert.equal(second.threadIdForTopic('oc_elsewhere', 'om_root'), 'omt_other_chat');
   assert.equal(second.topicRootFor('omt_missing'), null);
 });
 
@@ -40,6 +46,7 @@ test('StateStore loads legacy documents without a topics field', async () => {
   await writeFile(path, JSON.stringify({ version: 1, sessions: {}, seenMessageIds: [], watches: {} }), 'utf8');
   const store = await new StateStore(path).load();
   assert.equal(store.topicRootFor('omt_anything'), null);
+  assert.equal(store.threadIdForTopic('oc_group', 'om_root'), null);
   await store.setTopic('omt_created', { rootMessageId: 'om_root', chatId: 'oc_group' });
   assert.deepEqual(store.topicRootFor('omt_created'), { rootMessageId: 'om_root', chatId: 'oc_group' });
 });

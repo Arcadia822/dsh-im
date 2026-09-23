@@ -78,11 +78,11 @@ test('delivery HTTP POST forwards the exact public payload to the shared service
   assert.deepEqual(calls[0].slice(1, 4), ['bot_one', 'daily-report', '测试消息']);
 });
 
-test('delivery HTTP accepts optional Markdown format and rejects invalid format before sending', async () => {
+test('delivery HTTP accepts public send formats and rejects invalid format before sending', async () => {
   const { service, calls } = serviceFixture();
   await withServer(createDeliveryHttpHandler(service), async (url) => {
     const payload = { botId: 'bot_one', targetId: 'daily-report', text: '# Report\n\n**done**' };
-    for (const format of ['plain', 'markdown']) {
+    for (const format of ['plain', 'markdown', 'auto', 'card']) {
       const result = await request(url, { body: JSON.stringify({ ...payload, format }) });
       assert.equal(result.status, 200);
       assert.equal(calls.at(-1)[4].format, format);
@@ -94,7 +94,7 @@ test('delivery HTTP accepts optional Markdown format and rejects invalid format 
       assert.equal(result.body.error.code, 'bad-request');
     }
   });
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 4);
 });
 
 test('delivery HTTP rejects unsupported methods, media types, JSON, fields, and oversized bodies', async () => {
@@ -226,6 +226,13 @@ test('delivery HTTP messages list endpoint forwards valid request to service and
     assert.equal(calls[0][1], 'bot_one');
     assert.equal(calls[0][2], 'target_one');
     assert.equal(calls[0][3].pageSize, 15);
+    const draftResult = await request(url, {
+      body: JSON.stringify({ botId: 'bot_one', target: { kind: 'group', route: { chatId: 'oc_unsaved' } } }),
+    });
+    assert.equal(draftResult.status, 400);
+    assert.equal(draftResult.body.error.code, 'bad-request');
+    assert.equal(calls.length, 1);
+
 
     // Permission denied maps to 403
     service.listMessages = async () => {

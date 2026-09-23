@@ -93,6 +93,73 @@ test('Feishu tools auto-resolve botId and targetId from active session', async (
   }]);
 });
 
+test('Feishu tools keep explicit targets and scope inferred threads to the bound group', async () => {
+  const calls = [];
+  const tools = installedTools({
+    listBots: async () => [
+      { botId: 'bot_auto', channel: 'feishu' },
+      { botId: 'bot_other', channel: 'feishu' },
+    ],
+    listTargets: async () => ({
+      targets: [
+        { targetId: 'current', kind: 'group', route: { chatId: 'oc_current' } },
+        { targetId: 'current_alias', kind: 'group', route: { chatId: 'oc_current' } },
+        { targetId: 'other', kind: 'group', route: { chatId: 'oc_other' } },
+      ],
+    }),
+    conversationContextForSession: () => ({
+      botId: 'bot_auto', chatId: 'oc_current', threadId: 'omt_current',
+    }),
+    listMessages: async (...args) => { calls.push(['list', ...args]); return { items: [] }; },
+    send: async (...args) => { calls.push(['send', ...args]); return { sent: true }; },
+  });
+  const exec = { agent: { session: { header: { id: 'active' } } } };
+  const history = tools.get('dsh_im_feishu_list_messages');
+  await history.execute({ targetId: 'current_alias' }, exec);
+  await history.execute({ targetId: 'other' }, exec);
+  await history.execute({ botId: 'bot_auto', targetId: 'current' }, exec);
+  await tools.get('dsh_im_feishu_send').execute({ targetId: 'other', text: 'elsewhere' }, exec);
+  assert.deepEqual(calls, [
+    ['list', 'bot_auto', 'current_alias', { threadId: 'omt_current' }],
+    ['list', 'bot_auto', 'other', {}],
+    ['list', 'bot_auto', 'current', { threadId: 'omt_current' }],
+    ['send', 'bot_auto', 'other', 'elsewhere', {
+      format: undefined, replyToMessageId: undefined, replyInThread: undefined,
+    }],
+  ]);
+  await assert.rejects(
+    history.execute({ botId: 'bot_other' }, exec),
+    (error) => error?.code === 'bad-request',
+  );
+  await assert.rejects(
+    history.execute({ botId: 'not_feishu', targetId: 'other' }, exec),
+    (error) => error?.code === 'unknown-bot',
+  );
+});
+
+test('Feishu tools use a draft group target when the active group is not saved', async () => {
+  const calls = [];
+  const tools = installedTools({
+    listBots: async () => [{ botId: 'bot_auto', channel: 'feishu' }],
+    listTargets: async () => ({ targets: [] }),
+    conversationContextForSession: () => ({
+      botId: 'bot_auto', chatId: 'oc_unsaved', threadId: 'omt_unsaved',
+    }),
+    listMessages: async (...args) => { calls.push(['list', ...args]); return { items: [] }; },
+    send: async (...args) => { calls.push(['send', ...args]); return { sent: true }; },
+  });
+  const exec = { agent: { session: { header: { id: 'active' } } } };
+  await tools.get('dsh_im_feishu_list_messages').execute({}, exec);
+  await tools.get('dsh_im_feishu_send').execute({ text: 'draft' }, exec);
+  const draft = { kind: 'group', route: { chatId: 'oc_unsaved' } };
+  assert.deepEqual(calls, [
+    ['list', 'bot_auto', draft, { threadId: 'omt_unsaved' }],
+    ['send', 'bot_auto', draft, 'draft', {
+      format: undefined, replyToMessageId: undefined, replyInThread: undefined,
+    }],
+  ]);
+});
+
 test('Feishu tools reject a non-Feishu bot before touching delivery methods', async () => {
   let called = false;
   const tools = installedTools({

@@ -348,6 +348,64 @@ test('DeliveryService listMessages delegates to Feishu group target and propagat
   );
 });
 
+test('DeliveryService lists unsaved Feishu groups without looking up or persisting targets', async () => {
+  const service = createDeliveryService();
+  const calls = [];
+  let failure;
+  service.registerAdapter(createDeliveryAdapter({
+    channel: 'feishu',
+    workspaces: {
+      has: (botId) => botId === 'feishu_bot',
+      listDeliveryTargets: () => { throw new Error('draft must not look up saved targets'); },
+    },
+    coreController: {
+      async listMessages(...args) {
+        if (failure) throw failure;
+        calls.push(args);
+        return { items: [{ messageId: 'om_draft' }], hasMore: false };
+      },
+    },
+    stateFor: async () => ({ snapshot: () => ({ sessions: {} }) }),
+  }));
+  const draft = { kind: 'group', route: { chatId: 'oc_unsaved' } };
+  const options = { pageSize: 5 };
+
+  assert.deepEqual(await service.listMessages('feishu_bot', draft, options), {
+    items: [{ messageId: 'om_draft' }], hasMore: false,
+  });
+  assert.deepEqual(calls, [[
+    'feishu_bot', { targetId: '__test__', ...draft }, options,
+  ]]);
+  assert.deepEqual(draft, { kind: 'group', route: { chatId: 'oc_unsaved' } });
+
+  for (const invalid of [
+    { ...draft, targetId: 'saved' },
+    { ...draft, name: 'Not a draft' },
+    { kind: 'group', route: { chatId: '' } },
+    { kind: 'group', route: { chatId: 'oc_unsaved', openId: 'ou_extra' } },
+  ]) {
+    await assert.rejects(service.listMessages('feishu_bot', invalid), {
+      code: Object.hasOwn(invalid, 'targetId') || Object.hasOwn(invalid, 'name')
+        ? 'bad-request' : 'invalid-target',
+    });
+  }
+  await assert.rejects(
+    service.listMessages('feishu_bot', { kind: 'user', route: { openId: 'ou_one' } }),
+    { code: 'bad-request' },
+  );
+  const abort = new AbortController();
+  abort.abort();
+  await assert.rejects(
+    service.listMessages('feishu_bot', draft, { signal: abort.signal }),
+    { code: 'cancelled' },
+  );
+  failure = new Error('Feishu history failed');
+  await assert.rejects(service.listMessages('feishu_bot', draft), { code: 'delivery-failed' });
+  failure = Object.assign(new Error('aborted'), { name: 'AbortError' });
+  await assert.rejects(service.listMessages('feishu_bot', draft), { code: 'cancelled' });
+  assert.equal(calls.length, 1);
+});
+
 test('DeliveryService listMessages and reply options reject non-Feishu channels', async () => {
   const service = createDeliveryService();
   const adapter = memoryAdapter({ channel: 'telegram', botId: 'tg_bot' });
@@ -360,6 +418,10 @@ test('DeliveryService listMessages and reply options reject non-Feishu channels'
 
   await assert.rejects(
     service.listMessages('tg_bot', 'tg-group'),
+    { code: 'bad-request' },
+  );
+  await assert.rejects(
+    service.listMessages('tg_bot', { kind: 'group', route: { chatId: '123' } }),
     { code: 'bad-request' },
   );
   await assert.rejects(

@@ -8232,19 +8232,20 @@ function topicTurnFixture({ groupResponseMode = 'all' } = {}) {
       return `回答：${text}`;
     },
   };
+  const status = bridgeStatus();
   const bridge = new FeishuHarnessBridge({
     client,
     channel: {},
     harness,
     state,
-    status: bridgeStatus(),
+    status,
     allowedSenderOpenIds: new Set(['ou_user']),
     botOpenId: 'ou_bot',
     groupTopicReply: true,
     groupResponseMode,
     logger: { info() {}, warn() {}, error() {} },
   });
-  return { bridge, state, topics, sessions, replies, asked };
+  return { bridge, harness, state, status, seen, topics, sessions, replies, asked };
 }
 
 function groupMentionEvent(messageId, text, extra = {}) {
@@ -8289,6 +8290,91 @@ test('an unmentioned follow-up continues a bound managed topic but not its main 
   assert.deepEqual(asked[1], { sessionId: 'session-topic', text: '继续说' });
   assert.equal(asked.length, 2, 'the unmentioned main-feed message must stay ignored');
   assert.equal(replies[1].data.reply_in_thread, true);
+});
+
+test('an explicit topic remains open after /new clears its Session, but other threads stay closed', async () => {
+  const { bridge, sessions, seen, asked } = topicTurnFixture({ groupResponseMode: 'mention' });
+  const topic = { thread_id: 'omt_manual', mentions: [] };
+  await bridge.accept(groupMentionEvent('manual-start', 'initial', { thread_id: 'omt_manual' }));
+  assert.equal(sessions.get('group:oc_group:thread:omt_manual'), 'session-topic');
+
+  await bridge.accept(groupMentionEvent('manual-new', '/new', { thread_id: 'omt_manual' }));
+  assert.equal(sessions.has('group:oc_group:thread:omt_manual'), false);
+  await bridge.accept(groupMentionEvent('manual-stranger', 'ignore', {
+    thread_id: 'omt_unrelated', mentions: [],
+  }));
+  await bridge.accept(groupMentionEvent('manual-main', 'ignore', { mentions: [] }));
+  await bridge.accept(groupMentionEvent('manual-follow', 'fresh question', topic));
+
+  assert.deepEqual(asked.map(({ text }) => text), ['initial', 'fresh question']);
+  assert.equal(sessions.get('group:oc_group:thread:omt_manual'), 'session-topic');
+  assert.equal(seen.has('manual-stranger'), false);
+  assert.equal(seen.has('manual-main'), false);
+});
+
+test('a menu new action leaves its explicit topic available for an unmentioned prompt', async () => {
+  const { bridge, sessions, replies, asked } = topicTurnFixture({ groupResponseMode: 'mention' });
+  await bridge.accept(groupMentionEvent('menu-start', 'initial', { thread_id: 'omt_manual' }));
+  await bridge.accept(groupMentionEvent('menu-open', '/m', { thread_id: 'omt_manual' }));
+  const menuCardId = `om-reply-${replies.length}`;
+  assert.equal(replies.at(-1).data.msg_type, 'interactive');
+  await bridge.onCardAction(cardActionEvent(menuCardId, 'new', 'ou_user'));
+  assert.equal(sessions.has('group:oc_group:thread:omt_manual'), false);
+
+  await bridge.accept(groupMentionEvent('menu-follow', 'fresh question', {
+    thread_id: 'omt_manual', mentions: [],
+  }));
+  assert.deepEqual(asked.map(({ text }) => text), ['initial', 'fresh question']);
+});
+
+test('a bot-opened topic after /help accepts its first unmentioned prompt without a Session', async () => {
+  const { bridge, topics, sessions, seen, asked } = topicTurnFixture({ groupResponseMode: 'mention' });
+  await bridge.accept(groupMentionEvent('help-root', '/help'));
+  assert.deepEqual(topics.get('omt-auto-1'), { rootMessageId: 'help-root', chatId: 'oc_group' });
+  assert.equal(sessions.size, 0);
+
+  await bridge.accept(groupMentionEvent('help-other', 'ignore', {
+    thread_id: 'omt_other', mentions: [],
+  }));
+  await bridge.accept(groupMentionEvent('help-main', 'ignore', { mentions: [] }));
+  await bridge.accept(groupMentionEvent('help-other-chat', 'ignore', {
+    chat_id: 'oc_other', thread_id: 'omt-auto-1', mentions: [],
+  }));
+  await bridge.accept(groupMentionEvent('help-follow', 'first question', {
+    thread_id: 'omt-auto-1', mentions: [],
+  }));
+  assert.equal(seen.has('help-other'), false);
+  assert.equal(seen.has('help-main'), false);
+  assert.equal(seen.has('help-other-chat'), false);
+  assert.deepEqual(asked.map(({ text }) => text), ['first question']);
+  assert.equal(sessions.get('group:oc_group:managed:help-root'), 'session-topic');
+});
+
+test('an initial topic turn admits a queued unmentioned prompt before a Session is bound', async () => {
+  const { bridge, harness, sessions, seen, asked } = topicTurnFixture({ groupResponseMode: 'mention' });
+  const running = deferred();
+  const resume = deferred();
+  harness.createSession = async () => {
+    running.resolve();
+    await resume.promise;
+    return 'session-topic';
+  };
+
+  const first = bridge.accept(groupMentionEvent('flight-first', 'first', {
+    thread_id: 'omt_flight',
+  }));
+  await running.promise;
+  assert.equal(sessions.size, 0);
+  const next = bridge.accept(groupMentionEvent('flight-follow', 'second', {
+    thread_id: 'omt_flight', mentions: [],
+  }));
+  await bridge.accept(groupMentionEvent('flight-other', 'ignore', {
+    thread_id: 'omt_other', mentions: [],
+  }));
+  assert.equal(seen.has('flight-other'), false);
+  resume.resolve();
+  await Promise.all([first, next]);
+  assert.deepEqual(asked.map(({ text }) => text), ['first', 'second']);
 });
 
 function deferredAwareStateFixture(initialSessions = []) {

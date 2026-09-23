@@ -926,6 +926,64 @@ test('FeishuRuntime sendProactiveText supports reply options and validates chat 
   await runtime.stop();
 });
 
+test('FeishuRuntime resolves managed sessions to persisted topic thread IDs', () => {
+  const keys = new Map([
+    ['managed', 'group:oc_group:managed:om_root'],
+    ['ordinary', 'group:oc_group:thread:omt_native'],
+    ['feed', 'group:oc_group'],
+  ]);
+  const runtime = new FeishuRuntime({
+    lark: fakeLark(),
+    botId: 'bot_topics',
+    appId: 'cli_topics',
+    appSecret: 'secret',
+    ownerOpenIds: ['ou_owner'],
+    harness: { async ensureRunning() {} },
+    state: {
+      keyForSession: (id) => keys.get(id),
+      threadIdForTopic: (chatId, root) =>
+        chatId === 'oc_group' && root === 'om_root' ? 'omt_persisted' : null,
+    },
+  });
+  assert.deepEqual(runtime.conversationContextForSession('managed'), {
+    botId: 'bot_topics', chatId: 'oc_group', threadId: 'omt_persisted',
+  });
+  assert.deepEqual(runtime.conversationContextForSession('ordinary'), {
+    botId: 'bot_topics', chatId: 'oc_group', threadId: 'omt_native',
+  });
+  assert.deepEqual(runtime.conversationContextForSession('feed'), {
+    botId: 'bot_topics', chatId: 'oc_group',
+  });
+});
+
+test('FeishuRuntime defaults direct proactive text to plain even when cards are enabled', async () => {
+  const runtime = new FeishuRuntime({
+    lark: fakeLark(),
+    botId: 'bot_sync',
+    appId: 'cli_sync',
+    appSecret: 'secret',
+    ownerOpenIds: ['ou_owner'],
+    harness: { async ensureRunning() {} },
+    state: { hasSeen: () => false },
+    stepPush: true,
+    stepPushMode: 'streaming_card',
+  });
+  const starting = runtime.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  FakeWSClient.instances[0].becomeReady();
+  await starting;
+  const target = { kind: 'group', route: { chatId: 'oc_group' } };
+  await runtime.sendProactiveText(target, 'session sync');
+  await runtime.sendProactiveText(target, 'proactive auto', { format: 'auto' });
+  assert.deepEqual(FakeClient.sent.map(({ data }) => data.msg_type), ['text', 'interactive']);
+  assert.equal(FakeClient.sent[0].data.content, JSON.stringify({ text: 'session sync' }));
+  assert.deepEqual(JSON.parse(FakeClient.sent[1].data.content), {
+    schema: '2.0',
+    body: { elements: [{ tag: 'markdown', content: 'proactive auto' }] },
+  });
+  await runtime.stop();
+});
+
 test('FeishuRuntime listMessages enforces group targets, thread chat scope, and pagination', async () => {
   const runtime = new FeishuRuntime({
     lark: fakeLark(),

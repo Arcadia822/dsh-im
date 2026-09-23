@@ -201,7 +201,7 @@ await ctx.dshIm.send(botId, targetId, '# 每日报告\n\n**检查完成**', {
 });
 ```
 
-飞书同 Host 调用还可使用 `ctx.dshIm.listMessages(botId, targetId, options)` 读取群／话题历史，并在 `send` 的第四个参数传 `replyToMessageId` 与 `replyInThread: true`。Agent 可直接调用 `dsh_im_feishu_list_messages` 和 `dsh_im_feishu_send`；两者只接受已配置的飞书 Bot 与保存目标 ID。
+飞书同 Host 调用还可使用 `ctx.dshIm.listMessages(botId, targetId, options)` 读取已保存群目标的群／话题历史，并在 `send` 的第四个参数传 `replyToMessageId` 与 `replyInThread: true`。Agent 可调用 `dsh_im_feishu_list_messages` 和 `dsh_im_feishu_send`：显式目标使用已保存的目标 ID；在绑定的飞书群会话内，省略目标时可直接使用当前群（无需预先保存），话题会话读取历史时默认使用当前话题。
 
 飞书/Lark 的 `format` 省略或设为 `auto` 时，只有机器人启用了步骤推送且步骤推送模式为 `streaming_card`，才将普通内容作为交互式 Markdown 卡片发送；其他模式发送普通文本。但符合飞书卡片结构的 JSON 字符串始终原样作为交互式卡片发送，包括非卡片机器人模式。可识别的结构为 `{"schema":"2.0","body":{"elements":[...]}}` 或含 `elements` 数组的旧版卡片；普通 JSON 不会被误判。`plain` 强制发送文本，`markdown` 始终将原文包装为交互式 Markdown 卡片，`card` 则原样发送有效卡片 JSON，否则将文本／Markdown 包装为交互式 Markdown 卡片。其他渠道只接受原有的 `plain`／`markdown`，且不保证 Markdown 渲染。HTTP 和 `message.send` RPC 使用同名 `format` 字段。
 

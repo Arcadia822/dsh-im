@@ -657,7 +657,11 @@ export class FeishuRuntime {
     const segments = key.split(':');
     if (segments[0] !== 'group' || !segments[1]) return null;
     const chatId = segments[1];
-    const threadId = segments[2] === 'thread' && segments[3] ? segments[3] : null;
+    const threadId = segments[2] === 'thread' && segments[3]
+      ? segments[3]
+      : segments[2] === 'managed' && segments[3]
+        ? this.#state?.threadIdForTopic?.(chatId, segments[3])
+        : null;
     return {
       botId: this.#botId,
       chatId,
@@ -668,7 +672,7 @@ export class FeishuRuntime {
 
   async sendProactiveText(target, text, {
     signal,
-    format = 'auto',
+    format = 'plain',
     replyToMessageId,
     replyInThread,
   } = {}) {

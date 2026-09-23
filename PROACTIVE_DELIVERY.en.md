@@ -182,7 +182,7 @@ await ctx.dshIm.send(botId, targetId, '# Daily report\n\n**Checks complete**', {
 });
 ```
 
-Same-Host Feishu callers can use `ctx.dshIm.listMessages(botId, targetId, options)` and pass `replyToMessageId` plus `replyInThread: true` in the fourth `send` argument. Agents can call `dsh_im_feishu_list_messages` and `dsh_im_feishu_send`; both require configured Feishu Bot and saved target IDs.
+Same-Host Feishu callers can use `ctx.dshIm.listMessages(botId, targetId, options)` for saved group targets and pass `replyToMessageId` plus `replyInThread: true` in the fourth `send` argument. Agents can call `dsh_im_feishu_list_messages` and `dsh_im_feishu_send`: an explicit target uses a saved target ID; inside a bound Feishu group session, omitting the target uses the current group without saving it first, and history in a thread session defaults to that thread.
 
 For Feishu/Lark, omitted or `auto` format sends ordinary content as an interactive Markdown card only when step push is enabled and its mode is `streaming_card`; otherwise it sends noncard text. A valid Feishu card JSON string passes through verbatim as an interactive card even for a noncard bot. Recognized shapes are `{"schema":"2.0","body":{"elements":[...]}}` or a legacy card with an `elements` array; arbitrary JSON remains ordinary content. `plain` forces text, `markdown` always wraps content in an interactive Markdown card, and `card` passes through valid card JSON or wraps ordinary text/Markdown in an interactive Markdown card. Other channels retain `plain`/`markdown` only, without guaranteed Markdown rendering. HTTP and `message.send` RPC accept the same optional `format` field.
 

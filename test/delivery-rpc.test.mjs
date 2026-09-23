@@ -110,6 +110,24 @@ test('delivery RPC rejects unknown, missing, and extra fields before calling the
   assert.deepEqual(calls, []);
 });
 
+test('delivery RPC accepts auto and card for send while still rejecting unsupported formats', async () => {
+  const { service, calls } = serviceFixture();
+  const handle = createDeliveryRpcHandler(service);
+  for (const format of ['auto', 'card']) {
+    const result = await handle('message.send', {
+      botId: 'bot_one', targetId: 'target_one', text: 'hello', format,
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls.at(-1), [
+      'send', 'bot_one', 'target_one', 'hello', { signal: undefined, format },
+    ]);
+  }
+  assert.equal((await handle('message.send', {
+    botId: 'bot_one', targetId: 'target_one', text: 'hello', format: 'html',
+  })).error.code, 'bad-request');
+  assert.equal(calls.length, 2);
+});
+
 test('delivery RPC returns only stable public errors and handles pre-cancelled calls', async () => {
   const { service } = serviceFixture();
   service.listTargets = async () => {
@@ -165,7 +183,6 @@ test('delivery RPC message.list and message.send reply options forward to servic
     'target_one',
     { signal, pageSize: 25, pageToken: 'tok_1' },
   ]);
-
   // message.send with reply options
   const sendRes = await handle('message.send', {
     botId: 'bot_one',
@@ -192,6 +209,7 @@ test('delivery RPC message.list and message.send reply options forward to servic
     { botId: 'bot_one', targetId: 'target_one', options: { pageSize: 100 } },
     { botId: 'bot_one', targetId: 'target_one', options: { threadId: 'omt_1', startTime: 12345 } },
     { botId: 'bot_one', targetId: 'target_one', extra: 'bad' },
+    { botId: 'bot_one', target: { kind: 'group', route: { chatId: 'oc_1' } } },
   ]) {
     const res = await handle('message.list', invalidPayload);
     assert.equal(res.ok, false);
