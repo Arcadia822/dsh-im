@@ -841,6 +841,199 @@ test('mention response mode ignores unaddressed groups and only accepts this bot
   assert.deepEqual(asked, ['你好', '无需提及']);
 });
 
+test('mention mode continues only a bound explicit group thread without a mention', async () => {
+  const fixture = stateFixture([
+    ['group:oc_group_mentions', 'session-group'],
+    ['group:oc_group_mentions:thread:omt_bound', 'session-thread'],
+  ]);
+  const asked = [];
+  const status = bridgeStatus();
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async () => undefined),
+    channel: {},
+    harness: {
+      sessionExists: async () => true,
+      createSession: async () => assert.fail('unmentioned messages must not create sessions'),
+      ask: async (sessionId, text) => {
+        asked.push({ sessionId, text });
+        return '收到';
+      },
+    },
+    state: fixture.state,
+    status,
+    allowedSenderOpenIds: new Set(['ou_user']),
+    botOpenId: 'ou_bot',
+    groupResponseMode: 'mention',
+  });
+  const group = { chat_type: 'group', chat_id: 'oc_group_mentions', mentions: [] };
+
+  await bridge.accept(event('bound-follow-up', '继续说', {
+    ...group, thread_id: 'omt_bound',
+  }));
+  await bridge.accept(event('unbound-thread', '新话题', {
+    ...group, thread_id: 'omt_unbound',
+  }));
+  await bridge.accept(event('main-feed', '群里闲聊', group));
+
+  assert.deepEqual(asked, [{ sessionId: 'session-thread', text: '继续说' }]);
+  assert.equal(status.messagesReceived, 1);
+  assert.equal(fixture.seen.has('bound-follow-up'), true);
+  assert.equal(fixture.seen.has('unbound-thread'), false);
+  assert.equal(fixture.seen.has('main-feed'), false);
+  assert.equal(fixture.sessions.size, 2);
+});
+
+test('mention-mode thread continuation keeps the bot and sender access guards', async () => {
+  const fixture = stateFixture([['group:oc_group_mentions:thread:omt_bound', 'session-thread']]);
+  const asked = [];
+  const status = bridgeStatus();
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async () => assert.fail('rejected thread messages must not reply')),
+    channel: {},
+    harness: {
+      sessionExists: async () => true,
+      ask: async (sessionId, text) => {
+        asked.push({ sessionId, text });
+        return '收到';
+      },
+    },
+    state: fixture.state,
+    status,
+    accessPolicy: directAccessPolicy({ users: [], privilegedIds: [] }),
+    botOpenId: 'ou_bot',
+    groupResponseMode: 'mention',
+  });
+  const group = { chat_type: 'group', chat_id: 'oc_group_mentions', thread_id: 'omt_bound', mentions: [] };
+  await bridge.accept(botEvent('bot-thread-without-mention', '机器消息', group));
+  await bridge.accept(event('denied-thread-user', '继续说', group));
+
+  assert.deepEqual(asked, []);
+  assert.equal(status.messagesReceived, 0);
+  assert.equal(fixture.seen.has('bot-thread-without-mention'), false);
+  assert.equal(fixture.seen.has('denied-thread-user'), true);
+  assert.equal(status.messagesRejected, 1);
+  assert.equal(fixture.sessions.size, 1);
+});
+
+test('a bound unmentioned thread executes model commands rather than prompting Harness', async () => {
+  const fixture = stateFixture([['group:oc_group_mentions:thread:omt_bound', 'session-thread']]);
+  const sent = [];
+  const asked = [];
+  const status = bridgeStatus();
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => sent.push(text)),
+    channel: {},
+    harness: {
+      workspaceSession: () => ({
+        sessionExists: async () => true,
+        models: async () => ({
+          groups: [{
+            id: 'provider',
+            name: 'Provider',
+            models: [{ id: 'model-one', name: 'Model One' }],
+          }],
+          failures: [],
+          current: { provider: 'provider', model: 'model-one' },
+        }),
+      }),
+      ask: async (_sessionId, text) => {
+        asked.push(text);
+        return 'unexpected model prompt';
+      },
+    },
+    state: fixture.state,
+    status,
+    allowedSenderOpenIds: new Set(['ou_user']),
+    botOpenId: 'ou_bot',
+    groupResponseMode: 'mention',
+  });
+
+  await bridge.accept(event('thread-models', '/models', {
+    chat_type: 'group', chat_id: 'oc_group_mentions',
+    thread_id: 'omt_bound', mentions: [],
+  }));
+  assert.deepEqual(asked, []);
+  assert.match(sent.at(-1), /provider\/model-one/);
+  assert.equal(status.messagesReceived, 1);
+  assert.equal(fixture.sessions.size, 1);
+});
+
+test('a bound unmentioned thread accepts a pending approval reply', async () => {
+  const fixture = stateFixture([['group:oc_group_mentions:thread:omt_bound', 'session-thread']]);
+  const sent = [];
+  const asked = [];
+  const decisions = [];
+  const decided = deferred();
+  const status = bridgeStatus();
+  const bridge = new FeishuHarnessBridge({
+    client: textClient(async ({ text }) => sent.push(text)),
+    channel: {},
+    harness: {
+      sessionExists: async () => true,
+      createSession: async () => assert.fail('the bound Session must be reused'),
+      ask: async (sessionId, text, options) => {
+        asked.push({ sessionId, text });
+        await options.onInteraction({
+          kind: 'approval',
+          interactionId: 'approval-thread',
+          rpcId: 'rpc-thread',
+          sessionId,
+          payload: {
+            type: 'approval/requested',
+            sessionId,
+            approvalId: 'approval-thread',
+            toolName: 'bash',
+            callId: 'call-thread',
+            reason: '运行命令',
+          },
+          toolCall: {
+            callId: 'call-thread',
+            name: 'bash',
+            arguments: '{}',
+          },
+          respond: async (result) => {
+            decisions.push(result);
+            decided.resolve();
+            return { accepted: true };
+          },
+        });
+        await decided.promise;
+        return '审批已完成';
+      },
+    },
+    state: fixture.state,
+    status,
+    interactionCards: false,
+    allowedSenderOpenIds: new Set(['ou_user']),
+    botOpenId: 'ou_bot',
+    groupResponseMode: 'mention',
+  });
+  const group = { chat_type: 'group', chat_id: 'oc_group_mentions', thread_id: 'omt_bound' };
+  const turn = bridge.accept(event('approval-thread-start', '@_bot 请审批', {
+    ...group, mentions: [{ key: '@_bot', id: { open_id: 'ou_bot' } }],
+  }));
+  await eventually(() => sent.some((text) => text.includes('运行命令')));
+
+  const approvalReply = bridge.accept(event('approval-thread-reply', '批准', {
+    ...group, mentions: [],
+  }));
+  await eventually(() => decisions.length === 1, 'unmentioned approval did not resolve');
+  await approvalReply;
+  await turn;
+
+  assert.deepEqual(decisions, [{
+    ok: true,
+    value: {
+      sessionId: 'session-thread',
+      approvalId: 'approval-thread',
+      outcome: 'allowed-once',
+    },
+  }]);
+  assert.deepEqual(asked, [{ sessionId: 'session-thread', text: '请审批' }]);
+  assert.equal(status.messagesReceived, 2);
+  assert.equal(fixture.sessions.size, 1);
+});
+
 for (const groupResponseMode of ['mention', 'all']) {
   test(`bot group mentions are accepted by default and deduplicated in ${groupResponseMode} mode`, async () => {
     const fixture = stateFixture([['group:oc_bot_group', 'session-bot-group']]);
@@ -8000,7 +8193,7 @@ test('groupTopicReply opens no topic for a group question denied by the access p
   assert.equal(topics.size, 0, 'a denied group question must not register a managed topic');
 });
 
-function topicTurnFixture() {
+function topicTurnFixture({ groupResponseMode = 'all' } = {}) {
   const sessions = new Map();
   const topics = new Map();
   const seen = new Set();
@@ -8048,6 +8241,7 @@ function topicTurnFixture() {
     allowedSenderOpenIds: new Set(['ou_user']),
     botOpenId: 'ou_bot',
     groupTopicReply: true,
+    groupResponseMode,
     logger: { info() {}, warn() {}, error() {} },
   });
   return { bridge, state, topics, sessions, replies, asked };
@@ -8063,8 +8257,10 @@ function groupMentionEvent(messageId, text, extra = {}) {
   });
 }
 
-test('a follow-up inside the auto-created topic continues the managed dsh session', async () => {
-  const { bridge, state, topics, sessions, replies, asked } = topicTurnFixture();
+test('an unmentioned follow-up continues a bound managed topic but not its main feed', async () => {
+  const { bridge, topics, sessions, replies, asked } = topicTurnFixture({
+    groupResponseMode: 'mention',
+  });
 
   await bridge.accept(groupMentionEvent('om-topic-root', '第一个问题'));
   await bridge.waitForIdle();
@@ -8080,13 +8276,18 @@ test('a follow-up inside the auto-created topic continues the managed dsh sessio
   // must resolve and reuse the same session (context continuity).
   await bridge.accept(groupMentionEvent('om-topic-follow', '继续说', {
     thread_id: 'omt-auto-1',
+    mentions: [],
   }));
-  await bridge.waitForIdle();
 
+  await bridge.accept(groupMentionEvent('om-topic-main-feed', '群里继续说', {
+    mentions: [],
+    root_id: 'om-topic-root',
+    parent_id: 'om-topic-root',
+  }));
   assert.equal(sessions.size, 1, 'no second session may be created for the same topic');
   assert.equal(sessions.get('group:oc_group:managed:om-topic-root'), 'session-topic');
-  assert.equal(asked.length, 2);
-  assert.equal(asked[1].sessionId, 'session-topic');
+  assert.deepEqual(asked[1], { sessionId: 'session-topic', text: '继续说' });
+  assert.equal(asked.length, 2, 'the unmentioned main-feed message must stay ignored');
   assert.equal(replies[1].data.reply_in_thread, true);
 });
 

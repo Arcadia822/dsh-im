@@ -954,21 +954,30 @@ export class FeishuHarnessBridge {
       this.#logger.warn?.('[dsh-feishu] ignored a message from a sender outside the legacy allowlist');
       return Promise.resolve();
     }
-    if (event?.message?.chat_type !== 'p2p'
+    const unaddressedMentionGroup = event?.message?.chat_type !== 'p2p'
       && this.#groupResponseMode === FEISHU_GROUP_RESPONSE_MODES.MENTION
-      && !addressed) {
+      && !addressed;
+    // Only an explicit Feishu topic may continue without @. A parent_id or
+    // a managed main-feed key alone must not open the mention gate.
+    if (unaddressedMentionGroup && !nonEmptyString(event?.message?.thread_id)) {
       return Promise.resolve();
     }
     if (this.#state.hasSeen(messageId) || this.#acceptedMessageIds.has(messageId)) {
       return Promise.resolve();
     }
-
     let key;
     try {
       key = this.#resolveKey(event);
     } catch {
       this.#status.messagesRejected += 1;
       this.#status.lastRejectedAt = new Date().toISOString();
+      return Promise.resolve();
+    }
+    // Check the resolved conversation's existing binding without creating a
+    // Session; an unrelated group binding cannot authorize a new topic.
+    const boundThreadContinuation = unaddressedMentionGroup
+      && Boolean(this.#state.sessionFor?.(key));
+    if (unaddressedMentionGroup && !boundThreadContinuation) {
       return Promise.resolve();
     }
     this.#rememberTopicReply(messageId, key);
@@ -1095,7 +1104,7 @@ export class FeishuHarnessBridge {
           : (isPresetCommand(commandText) ? runPresetCommand : null));
     // In all-message group mode, history must still be refused locally rather
     // than becoming a normal prompt when no mention is present.
-    if (commandRunner && (addressed || commandRunner === runHistoryCommand)) {
+    if (commandRunner && (addressed || boundThreadContinuation || commandRunner === runHistoryCommand)) {
       const processing = this.#processFastCommand(
         event,
         messageId,
@@ -1137,7 +1146,7 @@ export class FeishuHarnessBridge {
       actor: senderOpenId(event),
       messageId,
       text: extractText(event) ?? '',
-      addressed,
+      addressed: addressed || boundThreadContinuation,
       hasPendingQuestion: Boolean(pending),
       questionCompletion: pending?.submitting || pending?.claimedReplyMessageId
         ? pending.queue
