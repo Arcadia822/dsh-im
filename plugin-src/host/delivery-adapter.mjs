@@ -220,7 +220,7 @@ function sessionSyncView(channel, target, sessions, configured) {
 }
 
 /** Bind one channel's existing workspace store and unwrapped controller to DeliveryService. */
-export function createDeliveryAdapter({ channel, workspaces, coreController, stateFor }) {
+export function createDeliveryAdapter({ channel, workspaces, coreController, stateFor, harnessBaseUrl }) {
   if (!supportsDeliveryChannel(channel)) throw new TypeError(`Unsupported delivery channel: ${channel}`);
   if (!workspaces || typeof workspaces !== 'object') {
     throw new TypeError('delivery adapter requires a workspace store');
@@ -301,6 +301,22 @@ export function createDeliveryAdapter({ channel, workspaces, coreController, sta
     conversationContextForSession(sessionId) {
       if (typeof coreController.conversationContextForSession !== 'function') return null;
       return coreController.conversationContextForSession(sessionId);
+    },
+    async ensureFeishuThreadSession(options) {
+      if (harnessBaseUrl) {
+        const error = new Error('Local session tools cannot bind to a Feishu channel configured with an external harnessBaseUrl');
+        error.code = 'remote-harness-unsupported';
+        throw error;
+      }
+      if (typeof coreController.ensureFeishuThreadSession !== 'function') {
+        const error = new Error(`Channel ${channel} does not support ensureFeishuThreadSession`);
+        error.code = 'bad-request';
+        throw error;
+      }
+      return coreController.ensureFeishuThreadSession({
+        ...options,
+        workspaces,
+      });
     },
     async setSessionSync(botId, targetId, enabled) {
       if (typeof workspaces.setDeliveryTargetSessionSync !== 'function') {

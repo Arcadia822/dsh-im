@@ -10,6 +10,7 @@ const EMPTY_STATE = Object.freeze({
   deferred: {},
   includeArchivedSessions: false,
   topics: {},
+  threadRoots: {},
   mirrors: {},
 });
 
@@ -47,6 +48,7 @@ export class StateStore {
           ? parsed.includeArchivedSessions
           : false,
         topics: parsed.topics && typeof parsed.topics === 'object' ? parsed.topics : {},
+        threadRoots: parsed.threadRoots && typeof parsed.threadRoots === 'object' ? parsed.threadRoots : {},
         mirrors: parsed.mirrors && typeof parsed.mirrors === 'object' ? parsed.mirrors : {},
       };
     } catch (error) {
@@ -201,6 +203,40 @@ export class StateStore {
       && typeof root.chatId === 'string' && root.chatId.length > 0;
     if (!validRoot) throw new TypeError('Invalid Feishu topic root');
     this.#state.topics[threadId] = {
+      rootMessageId: root.rootMessageId,
+      chatId: root.chatId,
+    };
+    await this.#persist();
+  }
+
+  // ── Native Feishu thread roots (thread_id → root message, persisted) ──
+
+  threadRootFor(threadId) {
+    const entry = this.#state.threadRoots?.[threadId];
+    return entry && typeof entry === 'object'
+      && typeof entry.rootMessageId === 'string' && entry.rootMessageId.length > 0
+      && typeof entry.chatId === 'string' && entry.chatId.length > 0
+      ? { rootMessageId: entry.rootMessageId, chatId: entry.chatId }
+      : null;
+  }
+
+  threadIdForNativeThread(chatId, rootMessageId) {
+    if (!chatId || !rootMessageId) return null;
+    for (const [threadId, root] of Object.entries(this.#state.threadRoots ?? {})) {
+      if (root?.chatId === chatId && root?.rootMessageId === rootMessageId) {
+        return threadId;
+      }
+    }
+    return null;
+  }
+
+  async setThreadRoot(threadId, root) {
+    const validRoot = root && typeof root === 'object'
+      && typeof root.rootMessageId === 'string' && root.rootMessageId.length > 0
+      && typeof root.chatId === 'string' && root.chatId.length > 0;
+    if (!validRoot) throw new TypeError('Invalid Feishu thread root');
+    if (!this.#state.threadRoots) this.#state.threadRoots = {};
+    this.#state.threadRoots[threadId] = {
       rootMessageId: root.rootMessageId,
       chatId: root.chatId,
     };

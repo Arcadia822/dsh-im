@@ -1,5 +1,5 @@
 import { createConnectionDiagnostics, atConnectionStage } from '../shared/connection-error.mjs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { FeishuHarnessBridge } from './bridge.mjs';
 import { cardActionProbeCard } from './feishu-cards.mjs';
 import { VerifiedFeishuChannel } from './feishu-channel.mjs';
@@ -657,15 +657,241 @@ export class FeishuRuntime {
     const segments = key.split(':');
     if (segments[0] !== 'group' || !segments[1]) return null;
     const chatId = segments[1];
-    const threadId = segments[2] === 'thread' && segments[3]
-      ? segments[3]
-      : segments[2] === 'managed' && segments[3]
-        ? this.#state?.threadIdForTopic?.(chatId, segments[3])
-        : null;
+    let threadId = null;
+    let rootMessageId = null;
+    if (segments[2] === 'thread' && segments[3]) {
+      threadId = segments[3];
+      const root = (typeof this.#state?.threadRootFor === 'function' ? this.#state.threadRootFor(threadId) : null)
+        ?? (typeof this.#state?.topicRootFor === 'function' ? this.#state.topicRootFor(threadId) : null);
+      if (root?.chatId === chatId && root?.rootMessageId) {
+        rootMessageId = root.rootMessageId;
+      }
+    } else if (segments[2] === 'managed' && segments[3]) {
+      rootMessageId = segments[3];
+      threadId = this.#state?.threadIdForTopic?.(chatId, segments[3]) ?? null;
+    }
     return {
       botId: this.#botId,
       chatId,
       ...(threadId ? { threadId } : {}),
+      ...(rootMessageId ? { rootMessageId } : {}),
+    };
+  }
+
+  async ensureFeishuThreadSession({
+    chatId,
+    threadId,
+    rootMessageId,
+    requestId,
+    sessionController,
+    workspaces,
+    signal,
+  } = {}) {
+    if (!this.#status.ready || !this.#client) {
+      const error = new Error('飞书机器人尚未连接');
+      error.code = 'bot-not-connected';
+      throw error;
+    }
+    const cleanChatId = nonEmptyString(chatId);
+    if (!cleanChatId) {
+      const error = new TypeError('chatId must be a non-empty string');
+      error.code = 'bad-request';
+      throw error;
+    }
+
+    const requestedThreadId = nonEmptyString(threadId);
+    const requestedRootId = nonEmptyString(rootMessageId);
+    if (!requestedThreadId && !requestedRootId) {
+      const error = new Error('threadId or rootMessageId is required');
+      error.code = 'bad-request';
+      throw error;
+    }
+
+    signal?.throwIfAborted();
+
+    let verifiedRootId = null;
+    let verifiedThreadId = null;
+    let rootItemThreadId = null;
+
+    // Platform message/read proof
+    if (requestedRootId) {
+      let getRes;
+      try {
+        getRes = await this.#client.im.v1.message.get({
+          path: { message_id: requestedRootId },
+        });
+      } catch (err) {
+        signal?.throwIfAborted();
+        const error = new Error('Failed to verify root message; check message visibility and read permissions', { cause: err });
+        error.code = 'target-rejected';
+        throw error;
+      }
+      if (getRes?.code && getRes.code !== 0) {
+        const error = new Error(`Target root message rejected: ${getRes.msg || getRes.code}`);
+        error.code = 'target-rejected';
+        throw error;
+      }
+      const rawItems = getRes?.data?.items;
+      if (!Array.isArray(rawItems) || rawItems.length === 0) {
+        const error = new Error('Root message not found on Feishu');
+        error.code = 'target-rejected';
+        throw error;
+      }
+      const rootItem = rawItems.find((c) => nonEmptyString(c?.message_id) === requestedRootId);
+      if (!rootItem || rootItem.deleted === true) {
+        const error = new Error('Target root message is deleted or invalid');
+        error.code = 'target-rejected';
+        throw error;
+      }
+      if (nonEmptyString(rootItem.chat_id) !== cleanChatId) {
+        const error = new Error(`Target root message does not belong to chat ${cleanChatId}`);
+        error.code = 'target-rejected';
+        throw error;
+      }
+      if (nonEmptyString(rootItem.root_id) && nonEmptyString(rootItem.root_id) !== requestedRootId) {
+        const error = new Error('Target message is not the root of the requested thread');
+        error.code = 'target-rejected';
+        throw error;
+      }
+      verifiedRootId = requestedRootId;
+      rootItemThreadId = nonEmptyString(rootItem.thread_id);
+      if (requestedThreadId && rootItemThreadId && rootItemThreadId !== requestedThreadId) {
+        const error = new Error(`Root message thread ID (${rootItemThreadId}) does not match requested thread ID (${requestedThreadId})`);
+        error.code = 'target-rejected';
+        throw error;
+      }
+      if (rootItemThreadId) {
+        verifiedThreadId = rootItemThreadId;
+      }
+    }
+
+    if (requestedThreadId) {
+      signal?.throwIfAborted();
+      let listRes;
+      try {
+        listRes = await this.listMessages({ kind: 'group', route: { chatId: cleanChatId } }, { threadId: requestedThreadId });
+      } catch (err) {
+        signal?.throwIfAborted();
+        const error = new Error('Failed to verify Feishu thread history', { cause: err });
+        error.code = 'target-rejected';
+        throw error;
+      }
+      if (!Array.isArray(listRes?.items) || listRes.items.length === 0) {
+        const error = new Error('Feishu thread history is empty or unverified');
+        error.code = 'target-rejected';
+        throw error;
+      }
+      for (const item of listRes.items) {
+        if (item.chatId !== cleanChatId || (item.threadId && item.threadId !== requestedThreadId)) {
+          const error = new Error('Thread message does not belong to requested chat or thread');
+          error.code = 'target-rejected';
+          throw error;
+        }
+      }
+      verifiedThreadId = requestedThreadId;
+      const itemWithRoot = listRes.items.find((item) => nonEmptyString(item.rootId));
+      const threadRoot = itemWithRoot ? nonEmptyString(itemWithRoot.rootId) : null;
+      if (requestedRootId && threadRoot && threadRoot !== requestedRootId) {
+        const error = new Error('Root message and thread ID mismatch');
+        error.code = 'target-rejected';
+        throw error;
+      }
+      if (threadRoot) verifiedRootId ??= threadRoot;
+      if (requestedRootId && !rootItemThreadId && !threadRoot) {
+        const error = new Error('Cannot verify root message belongs to requested thread');
+        error.code = 'target-rejected';
+        throw error;
+      }
+    }
+
+    // Root-only with no verified threadId must reject, not substitute root message ID as threadId:
+    if (!verifiedThreadId) {
+      const persistedThreadId = this.#state?.threadIdForNativeThread?.(cleanChatId, verifiedRootId);
+      if (persistedThreadId) {
+        verifiedThreadId = persistedThreadId;
+      } else {
+        const error = new Error('Cannot resolve Feishu thread ID for root message without existing thread');
+        error.code = 'target-rejected';
+        throw error;
+      }
+    }
+    if (!verifiedRootId) {
+      const persistedRoot = this.#state?.threadRootFor?.(verifiedThreadId);
+      if (persistedRoot?.chatId === cleanChatId && persistedRoot?.rootMessageId) {
+        verifiedRootId = persistedRoot.rootMessageId;
+      } else {
+        const error = new Error('Cannot resolve root message ID for thread');
+        error.code = 'target-rejected';
+        throw error;
+      }
+    }
+
+    if (!sessionController || typeof sessionController.create !== 'function'
+      || typeof sessionController.resolveAgent !== 'function') {
+      const error = new Error('sessionController is required to bind local session');
+      error.code = 'bad-request';
+      throw error;
+    }
+
+    // Do not create any session before proof! (Proof is now complete).
+    const conversationKey = `group:${cleanChatId}:thread:${verifiedThreadId}`;
+
+    // Deterministic session ID and adoption
+    let sessionId = this.#state?.sessionFor?.(conversationKey);
+    let sessionExistsInHost = false;
+    if (sessionId) {
+      const existing = await sessionController.resolveAgent(sessionId);
+      if (existing?.agent && !existing?.error) {
+        sessionExistsInHost = true;
+      }
+    }
+
+    if (!sessionId || !sessionExistsInHost) {
+      if (!sessionId) {
+        const hash = createHash('sha256')
+          .update(`${this.#botId}:${cleanChatId}:${verifiedThreadId}`)
+          .digest('hex')
+          .slice(0, 16);
+        sessionId = `feishu-th-${hash}`;
+      }
+      const cwd = typeof workspaces?.conversationWorkspaceFor === 'function'
+        ? workspaces.conversationWorkspaceFor(this.#botId, conversationKey)
+        : (typeof workspaces?.workspaceFor === 'function' ? workspaces.workspaceFor(this.#botId) : process.cwd());
+      const agentPreset = typeof workspaces?.agentPresetFor === 'function'
+        ? workspaces.agentPresetFor(this.#botId)
+        : null;
+
+      try {
+        await sessionController.create({
+          sessionId,
+          cwd,
+          agentPreset: agentPreset ?? undefined,
+        });
+      } catch (err) {
+        const checkAgent = await sessionController.resolveAgent(sessionId);
+        if (!checkAgent?.agent || checkAgent?.error) {
+          throw err;
+        }
+      }
+    }
+
+    // Persisted state binding BEFORE core followup
+    if (typeof this.#state?.setSession === 'function') {
+      await this.#state.setSession(conversationKey, sessionId);
+    }
+    if (typeof this.#state?.setThreadRoot === 'function') {
+      await this.#state.setThreadRoot(verifiedThreadId, {
+        rootMessageId: verifiedRootId,
+        chatId: cleanChatId,
+      });
+    }
+
+    return {
+      sessionId,
+      botId: this.#botId,
+      chatId: cleanChatId,
+      threadId: verifiedThreadId,
+      rootMessageId: verifiedRootId,
     };
   }
 

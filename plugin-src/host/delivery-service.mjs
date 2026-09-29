@@ -27,6 +27,8 @@ const DELIVERY_ERROR_CODES = new Set([
   'permission-denied',
   'delivery-failed',
   'session-sync-unavailable',
+  'remote-harness-unsupported',
+  'forbidden',
   'cancelled',
 ]);
 
@@ -114,6 +116,7 @@ function sessionSyncState(value, available) {
 export class DeliveryService {
   #adapters = new Map();
   #unavailableSessionSyncChannels;
+  #replyStatusHandler = null;
 
   constructor({ unavailableSessionSyncChannels = [] } = {}) {
     if (!Array.isArray(unavailableSessionSyncChannels)
@@ -336,6 +339,44 @@ export class DeliveryService {
       }
     }
     return null;
+  }
+
+  async ensureFeishuThreadSession(options) {
+    const { senderSessionId } = options ?? {};
+    if (typeof senderSessionId !== 'string' || !senderSessionId) {
+      const error = new Error('senderSessionId is required');
+      error.code = 'bad-request';
+      throw error;
+    }
+    const context = await this.conversationContextForSession(senderSessionId);
+    if (!context?.botId) {
+      const error = new Error('Sender session has no bound bot context');
+      error.code = 'forbidden';
+      throw error;
+    }
+    const adapter = await this.#adapterFor(context.botId);
+    if (this.#unavailableSessionSyncChannels.has(adapter.channel)) {
+      const error = new Error('Local session tools cannot bind to a Feishu channel configured with an external harnessBaseUrl');
+      error.code = 'remote-harness-unsupported';
+      throw error;
+    }
+    if (typeof adapter.ensureFeishuThreadSession !== 'function') {
+      const error = new Error(`Channel ${adapter.channel} does not support ensureFeishuThreadSession`);
+      error.code = 'bad-request';
+      throw error;
+    }
+    return adapter.ensureFeishuThreadSession(options);
+  }
+
+  replyStatusForReceipt(receiptId) {
+    if (typeof this.#replyStatusHandler === 'function') {
+      return this.#replyStatusHandler(receiptId);
+    }
+    return null;
+  }
+
+  setReplyStatusHandler(handler) {
+    this.#replyStatusHandler = typeof handler === 'function' ? handler : null;
   }
 
 

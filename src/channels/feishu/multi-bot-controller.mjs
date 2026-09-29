@@ -135,6 +135,7 @@ export class MultiBotDshFeishuController {
   #botTransitions = new Map();
   #revision = 1;
   #callbackProbeTimeoutMs;
+  #harnessBaseUrl;
   #closed = false;
 
   constructor({
@@ -148,6 +149,7 @@ export class MultiBotDshFeishuController {
     createBotId = makeBotId,
     createRegistrationId = makeRegistrationId,
     callbackProbeTimeoutMs = DEFAULT_CALLBACK_PROBE_TIMEOUT_MS,
+    harnessBaseUrl,
   }) {
     if (typeof registerApp !== 'function') throw new Error('registerApp is required');
     if (typeof verifyApp !== 'function') throw new Error('verifyApp is required');
@@ -172,6 +174,7 @@ export class MultiBotDshFeishuController {
     this.#createBotId = createBotId;
     this.#createRegistrationId = createRegistrationId;
     this.#callbackProbeTimeoutMs = callbackProbeTimeoutMs;
+    this.#harnessBaseUrl = harnessBaseUrl;
   }
 
   async initialize() {
@@ -593,6 +596,49 @@ export class MultiBotDshFeishuController {
       }
     }
     return null;
+  }
+
+  async ensureFeishuThreadSession({
+    senderSessionId,
+    threadId,
+    rootMessageId,
+    requestId,
+    sessionController,
+    workspaces,
+    signal,
+  } = {}) {
+    this.#assertOpen();
+    if (this.#harnessBaseUrl) {
+      const error = new Error('Local session tools cannot bind to a Feishu channel configured with an external harnessBaseUrl');
+      error.code = 'remote-harness-unsupported';
+      throw error;
+    }
+    if (typeof senderSessionId !== 'string' || !senderSessionId) {
+      const error = new Error('senderSessionId is required');
+      error.code = 'bad-request';
+      throw error;
+    }
+    const senderContext = this.conversationContextForSession(senderSessionId);
+    if (!senderContext || !senderContext.botId || !senderContext.chatId) {
+      const error = new Error('Sender session is not bound to a Feishu group');
+      error.code = 'forbidden';
+      throw error;
+    }
+    const runtime = this.#runtimes.get(senderContext.botId);
+    if (!runtime) {
+      const error = new Error(`Bot ${senderContext.botId} not found or not connected`);
+      error.code = 'bot-not-connected';
+      throw error;
+    }
+    return runtime.ensureFeishuThreadSession({
+      chatId: senderContext.chatId,
+      threadId,
+      rootMessageId,
+      requestId,
+      sessionController,
+      workspaces,
+      signal,
+    });
   }
 
 

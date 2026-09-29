@@ -880,8 +880,15 @@ export class FeishuHarnessBridge {
     // Topic membership is decided by the conversation shape alone (see
     // #rememberTopicReply): a manual-topic chat threads its replies even
     // when the 群话题回复 switch is off.
-    return nonEmptyString(replyTo)
-      && this.#anchorTopicReply.get(replyTo) === true;
+    if (!nonEmptyString(replyTo)) return false;
+    if (this.#anchorTopicReply.get(replyTo) === true) return true;
+    if (typeof this.#state?.threadRootFor === 'function' && this.#state.threadRootFor(replyTo)) {
+      return true;
+    }
+    if (typeof this.#state?.topicRootFor === 'function' && this.#state.topicRootFor(replyTo)) {
+      return true;
+    }
+    return false;
   }
 
   /** Drop expired root candidates so a silently dropped reply cannot leak memory. */

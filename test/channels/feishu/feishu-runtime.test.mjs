@@ -926,7 +926,7 @@ test('FeishuRuntime sendProactiveText supports reply options and validates chat 
   await runtime.stop();
 });
 
-test('FeishuRuntime resolves managed sessions to persisted topic thread IDs', () => {
+test('FeishuRuntime resolves managed sessions to the persisted thread and verified reply root', () => {
   const keys = new Map([
     ['managed', 'group:oc_group:managed:om_root'],
     ['ordinary', 'group:oc_group:thread:omt_native'],
@@ -946,7 +946,7 @@ test('FeishuRuntime resolves managed sessions to persisted topic thread IDs', ()
     },
   });
   assert.deepEqual(runtime.conversationContextForSession('managed'), {
-    botId: 'bot_topics', chatId: 'oc_group', threadId: 'omt_persisted',
+    botId: 'bot_topics', chatId: 'oc_group', threadId: 'omt_persisted', rootMessageId: 'om_root',
   });
   assert.deepEqual(runtime.conversationContextForSession('ordinary'), {
     botId: 'bot_topics', chatId: 'oc_group', threadId: 'omt_native',

@@ -19,6 +19,8 @@ import { installDeliveryRpc } from './delivery-rpc.mjs';
 import { installDeliveryHttp } from './delivery-http.mjs';
 import { createDeliveryService } from './delivery-service.mjs';
 import { installFeishuTools } from './feishu-tools.mjs';
+import { createLocalSessionService, installLocalSessionTools } from './local-session-tools.mjs';
+import { installFeishuSessionReplyRouter } from './feishu-session-reply-router.mjs';
 import { installInboundTtlRpc } from './inbound-ttl-rpc.mjs';
 import { installInjectedContext } from './injected-context.mjs';
 import { installSessionSyncCoordinator } from './session-sync-coordinator.mjs';
@@ -90,6 +92,7 @@ export function createImHostPlugin(internals = {}) {
         .filter((channel) => channel !== 'office'
           && config[channel]?.harnessBaseUrl !== undefined);
       const deliveryService = makeDeliveryService({ unavailableSessionSyncChannels });
+      let localSessionService = null;
       if (typeof ctx?.provide === 'function') {
         ctx.provide('dshIm', Object.freeze({
           send: (botId, targetId, text, options) => (
@@ -100,10 +103,18 @@ export function createImHostPlugin(internals = {}) {
           listMessages: (botId, targetId, options) => (
             deliveryService.listMessages(botId, targetId, options)
           ),
+          deliverSessionInput: (args) => {
+            if (!localSessionService) throw new Error('DSH-IM Session input service is not ready');
+            return localSessionService.sendFromHost(args);
+          },
+          querySessionInput: (args) => {
+            if (!localSessionService) throw new Error('DSH-IM Session input service is not ready');
+            return localSessionService.queryFromHost(args);
+          },
         }));
       }
       const activate = async (readyCtx) => {
-        await activateChannels(readyCtx, config, deliveryService);
+        await activateChannels(readyCtx, config, deliveryService, (service) => { localSessionService = service; });
       };
       if (typeof ctx?.inject === 'function') {
         const modern = typeof ctx?.typertGateway?.stream === 'function';
@@ -116,14 +127,14 @@ export function createImHostPlugin(internals = {}) {
         });
         return;
       }
-      await activate(ctx);
+      await activateChannels(ctx, config, deliveryService, (service) => { localSessionService = service; });
       if (ctx?.webServer?.register && typeof ctx?.effect === 'function') {
         startDeliveryHttp(ctx, deliveryService);
       }
     },
   });
 
-  async function activateChannels(ctx, config, deliveryService) {
+  async function activateChannels(ctx, config, deliveryService, setLocalSessionService) {
     // Bind the bot message language before any channel connects, so the first
     // command menu a platform stores is already in the interface language.
     const hostLanguage = startHostLanguage(ctx, config);
@@ -149,6 +160,19 @@ export function createImHostPlugin(internals = {}) {
     } else {
       installOutboundArtifactTool(ctx);
       installFeishuTools(ctx, deliveryService);
+    }
+    const startLocalSessionTools = (toolCtx) => {
+      if (!toolCtx?.tools?.register || !toolCtx?.sessions || !toolCtx?.agents
+        || !toolCtx?.sessionController) return;
+      const sessionService = createLocalSessionService(toolCtx, { deliveryService });
+      setLocalSessionService(sessionService);
+      installLocalSessionTools(toolCtx, sessionService);
+      installFeishuSessionReplyRouter(toolCtx, deliveryService);
+    };
+    if (typeof ctx?.inject === 'function') {
+      ctx.inject(['tools', 'sessions', 'agents', 'sessionController'], startLocalSessionTools);
+    } else {
+      startLocalSessionTools(ctx);
     }
     const logger = typeof ctx?.logger === 'function'
       ? ctx.logger(name)

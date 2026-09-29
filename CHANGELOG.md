@@ -6,6 +6,11 @@ This file records the notable changes in each dsh-im release. Its format follows
 
 ## [Unreleased]
 
+### Added / 新增
+
+- 新增受信 Host 会话投递：Agent 可创建独立 Session、向有权限的 Session 注入保留真实来源的 user-role 输入并查询接受/执行回执；同 Host 的 bot、webhook 与定时任务可复用入口。飞书群可在确认消息归属后将 Thread 绑定到独立 Session，并将首轮结果只回复到该楼层，不改动全局话题行为。
+  Added trusted Host Session delivery: Agents can create independent Sessions, enqueue sourced user-role inputs into authorized Sessions, and query admission/execution receipts; same-Host bot, webhook, and scheduler producers share the delivery path. Verified Feishu threads bind separate Sessions and route the first turn's result only to that thread, without changing global topic behavior.
+
 ## [4.25.0] - 2026-09-22
 
 ### Added / 新增

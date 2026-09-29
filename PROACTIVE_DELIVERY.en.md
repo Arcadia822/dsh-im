@@ -150,6 +150,27 @@ The app must be in the group and hold a message-read scope plus `im:message.grou
 
 To create or reuse a thread, add `replyToMessageId` and `replyInThread: true` to the ordinary send payload. DSH-IM verifies that the message belongs to the saved group and never falls back to the main feed. A successful reply receipt contains `sent`, `messageId`, `threadId`, and `rootId`. It does not migrate the automation Session, schedules, or heartbeat; later accepted user messages retain the existing per-`threadId` Session routing.
 
+### Start a separate Feishu thread Session from a group Agent
+
+Verify the Issue, repository, and original group message first. Then call `dsh_im_feishu_send` with `replyToMessageId` and `replyInThread: true`. Its `threadId` confirms that Feishu opened the discussion; sending that message **does not run an Agent turn**. Use the verified group message ID as `rootMessageId` (or a matching `rootId` from the reply).
+
+```js
+// Agent tool arguments; keep requestId stable across retries.
+dsh_im_session_create({ requestId: 'issue-123:thread', threadId, rootMessageId });
+// The returned sessionId is independent from the group Session.
+dsh_im_session_send_input({
+  sessionId, requestId: 'issue-123:first-input',
+  text: 'Design this verified Issue in this thread.',
+});
+dsh_im_session_query({ receiptId });
+```
+
+Without `threadId` and `rootMessageId`, `dsh_im_session_create` creates an independent Session in the caller's workspace. Agent tools derive the principal from the actual Host Session. Creator/child links authorize ordinary Sessions; Feishu group ↔ thread delivery additionally requires the same bot and group. Cross-group, cross-bot, and sibling-thread delivery is denied. Later thread messages continue its bound Session, not the group Session; there is no need to enable global `groupTopicReply` or forge a human Feishu event.
+
+Delivery enqueues a user-role input carrying the non-human `plugin:dsh-im-session-tools` source and originating Session. `queued` means accepted and persisted, not completed; query for `running`, `completed`, `failed`, or `unknown` (ambiguous write: do not automatically resend). The query includes `replyStatus`; replies remain anchored to the verified thread root and never fall back to the main feed. Repeating the same `requestId` returns the existing receipt without starting another turn.
+
+**Trusted same-Host plugins** can use `ctx.dshIm.deliverSessionInput({ sessionId, requestId, text, source: { kind: 'scheduler', id: taskId, eventId } })` and `ctx.dshIm.querySessionInput({ receiptId, source })`. `kind` can also be `webhook` or `bot`. Plugins must verify the external event/job and its target authorization before declaring its stable source and event IDs. This privileged Host API does not apply the Agent group Session ACL: **do not expose it to unauthenticated HTTP/Connection RPC or untrusted message content**. Its input still has user role, but `source.kind` is never `user`.
+
 ## Send from a plugin in the same Host
 
 A consumer plugin can declare the `dshIm` injection and call the shared service directly without going through Connection RPC.

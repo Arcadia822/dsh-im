@@ -169,6 +169,27 @@ curl --request POST \
 
 DSH-IM 会先确认消息属于保存目标对应的群，再创建或复用话题；不会失败后改发公屏。成功回执包含 `sent`、`messageId`、`threadId` 和 `rootId`。这项操作不迁移 automation Session、定时任务或心跳；用户随后在话题中的有效消息仍由现有按 `threadId` 的独立 Session 路由处理。
 
+### 飞书群 Agent 启动独立 Thread Session
+
+先在群 Session 内校验 Issue、仓库与原群消息，再用 `dsh_im_feishu_send` 对该消息执行 `replyToMessageId + replyInThread: true`。发送回执里的 `threadId` 只说明飞书楼层已建立，**不会触发 Agent 轮次**；`rootMessageId` 使用已验证的原群消息 ID（或与它一致的 `rootId`）。
+
+```js
+// 以下是 Agent 工具调用参数；requestId 在重试时必须保持不变。
+dsh_im_session_create({ requestId: 'issue-123:thread', threadId, rootMessageId });
+// 返回独立的 sessionId；平台消息、话题和群归属验证失败时不创建。
+dsh_im_session_send_input({
+  sessionId, requestId: 'issue-123:first-input',
+  text: '请在这个话题中完成已校验 Issue 的设计。',
+});
+dsh_im_session_query({ receiptId });
+```
+
+`dsh_im_session_create` 也可不传 `threadId`、`rootMessageId`，在调用者的工作区创建普通独立 Session。Agent 工具从 Host 的当前 Session 取得发起者身份；普通 Session 使用创建者/子 Session 授权，飞书群与 Thread 只允许同 bot、同群的群↔话题投递，跨群、跨 bot 和兄弟话题互投均拒绝。入站后续群消息仍用原群 Session，话题消息续接绑定的独立 Session；不打开全局 `groupTopicReply`，也不伪造飞书用户消息。
+
+投递写入目标 Agent 的 user-role inbox，来源保留为 `plugin:dsh-im-session-tools` 与发起 Session；回执 `queued` 仅指持久化接受，`running`、`completed`、`failed` 是执行状态，`unknown` 表示写入结果不确定，不能自动重发。查询还返回话题回复的 `replyStatus`；回复只锚定已验证的楼顶，不回退到公屏。重试复用 `requestId` 会读取同一回执，不再次唤醒目标。
+
+同一 Host 内的**受信插件**可用 `ctx.dshIm.deliverSessionInput({ sessionId, requestId, text, source: { kind: 'scheduler', id: taskId, eventId } })` 复用同一投递路径，`ctx.dshIm.querySessionInput({ receiptId, source })` 查询结果。`kind` 还可取 `webhook` 或 `bot`。插件必须先验证外部事件/任务及其目标授权，提供稳定的来源 ID 和事件 ID；该 Host 内能力不经 Agent 的群会话 ACL，**不得透传给无鉴权 HTTP/Connection RPC 或不可信消息内容**。这些投递仍是 user-role，但 `source.kind` 不会变成 `user`。
+
 ## 在同一 Host 的插件中发送
 
 消费插件声明 `dshIm` 注入后，可以直接调用共享服务，不经过 Connection RPC。
